@@ -1,0 +1,40 @@
+# 素材图片（不纳入版本控制）
+素材/
+
+# 开发调试脚本
+*_test*.py
+*_test*.json
+diagnose*.py
+debug*.py
+compare*.py
+explore*.py
+check_*.py
+analyze_*.py
+batch_test*.py
+test_*.py
+
+# Playwright MCP
+.playwright-mcp/
+
+# 文档草稿
+docs/
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 虚拟环境
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 系统文件
+.DS_Store
+Thumbs.db
