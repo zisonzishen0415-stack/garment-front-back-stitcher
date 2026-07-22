@@ -121,7 +121,7 @@ class BBoxEditor(tk.Canvas):
             rotated.append((cx + dx * cos_a - dy * sin_a, cy + dx * sin_a + dy * cos_a))
         return rotated
 
-    PLACEHOLDER_W = 160  # 统一定宽，三区域尺寸一致
+    PLACEHOLDER_W = 220  # 统一定宽，三区域尺寸一致
 
     def _redraw(self):
         """完整重绘：背景图 + 叠加层"""
