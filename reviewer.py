@@ -2,13 +2,16 @@
 流程：选文件夹 → AI+CV 流式处理（完成一对立即可审）
 左预览 + 右编辑 + 角度旋钮
 """
-import sys, os
-# PyInstaller 打包时，优先用捆绑的 u2net.onnx 模型
-# PyInstaller onefile 会把文件解压到 sys._MEIPASS，模型在那里
+import sys, os, shutil
+# PyInstaller onefile: 把捆绑的模型复制到 ~/.u2net/（rembg 默认路径）
+# 避免 pooch 在临时解压目录里因权限/编码问题校验失败
 _EXE_DIR = sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(__file__)
 _BUNDLED_MODEL = os.path.join(_EXE_DIR, 'models', 'u2net.onnx')
 if os.path.exists(_BUNDLED_MODEL):
-    os.environ['U2NET_HOME'] = os.path.join(_EXE_DIR, 'models')
+    _U2NET_USER = os.path.join(os.path.expanduser('~'), '.u2net', 'u2net.onnx')
+    if not os.path.exists(_U2NET_USER):
+        os.makedirs(os.path.dirname(_U2NET_USER), exist_ok=True)
+        shutil.copy2(_BUNDLED_MODEL, _U2NET_USER)
 
 import json
 import math
