@@ -77,7 +77,6 @@ class BBoxEditor(tk.Canvas):
         self._last_fit_w = cw
         self._last_fit_h = ch
         iw, ih = self.pil_img.size
-        # 竖向素材：优先撑满高度，宽度可能溢出但不影响 bbox 居中
         if ih > iw:
             s = ch / ih * 0.90
         else:
