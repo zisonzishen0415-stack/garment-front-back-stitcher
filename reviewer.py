@@ -314,6 +314,7 @@ class ReviewerApp(ctk.CTk):
         self.annotations: dict[str, dict] = {}
         self.input_dir: Optional[Path] = None
         self._preview_zoom = 1.0
+        self._liquified: Optional[Image.Image] = None  # 液化修改后的结果
 
         # 流式处理
         self._proc_done = 0
@@ -468,6 +469,7 @@ class ReviewerApp(ctk.CTk):
             self.editor_b.angle = self.angle_b
             self.editor_b._redraw()
             self.lbl_angle_b.configure(text=f"{self.angle_b:+.1f}°")
+        self._liquified = None  # 角度变了，液化结果作废
         self._update_preview()
         self._auto_save_debounce()
 
@@ -476,6 +478,7 @@ class ReviewerApp(ctk.CTk):
         self.editor_a.angle = 0.0; self.editor_b.angle = 0.0
         self.lbl_angle_a.configure(text="0.0°"); self.lbl_angle_b.configure(text="0.0°")
         self.editor_a._redraw(); self.editor_b._redraw()
+        self._liquified = None  # 角度重置，液化作废
         self._update_preview()
         self._auto_save_debounce()
 
@@ -583,6 +586,7 @@ class ReviewerApp(ctk.CTk):
         if not self.pairs or self.pair_idx >= self._proc_done:
             return
 
+        self._liquified = None  # 切图时清除液化缓存
         self.winfo_toplevel().update()  # 强制全窗口布局完成
 
         pa, pb = self.pairs[self.pair_idx]
@@ -652,22 +656,25 @@ class ReviewerApp(ctk.CTk):
 
     def _update_preview(self):
         if not self.img_a or not self.img_b: return
-        unified_cw = max(self._natural_w(self.bbox_a), self._natural_w(self.bbox_b))
-        crop_a = self._simple_crop(self.img_a, self.bbox_a, "right", unified_cw, self.angle_a)
-        crop_b = self._simple_crop(self.img_b, self.bbox_b, "left", unified_cw, self.angle_b)
-        if crop_a.width != crop_b.width:
-            tw = max(crop_a.width, crop_b.width); th = tw * 2
-            for crp, is_a in [(crop_a, True), (crop_b, False)]:
-                if crp.width != tw:
-                    tmp = Image.new("RGB", (tw, th), (255, 255, 255))
-                    tmp.paste(crp, ((tw - crp.width)//2, (th - crp.height)//2))
-                    if is_a: crop_a = tmp
-                    else:    crop_b = tmp
-        th = min(crop_a.height, crop_b.height); th += th % 2; hw = th // 2
-        left = crop_a.resize((hw, th), Image.LANCZOS)
-        right = crop_b.resize((hw, th), Image.LANCZOS)
-        preview = Image.new("RGB", (th, th), (255, 255, 255))
-        preview.paste(left, (0, 0)); preview.paste(right, (hw, 0))
+        if self._liquified:
+            preview = self._liquified
+        else:
+            unified_cw = max(self._natural_w(self.bbox_a), self._natural_w(self.bbox_b))
+            crop_a = self._simple_crop(self.img_a, self.bbox_a, "right", unified_cw, self.angle_a)
+            crop_b = self._simple_crop(self.img_b, self.bbox_b, "left", unified_cw, self.angle_b)
+            if crop_a.width != crop_b.width:
+                tw = max(crop_a.width, crop_b.width); th = tw * 2
+                for crp, is_a in [(crop_a, True), (crop_b, False)]:
+                    if crp.width != tw:
+                        tmp = Image.new("RGB", (tw, th), (255, 255, 255))
+                        tmp.paste(crp, ((tw - crp.width)//2, (th - crp.height)//2))
+                        if is_a: crop_a = tmp
+                        else:    crop_b = tmp
+            th = min(crop_a.height, crop_b.height); th += th % 2; hw = th // 2
+            left = crop_a.resize((hw, th), Image.LANCZOS)
+            right = crop_b.resize((hw, th), Image.LANCZOS)
+            preview = Image.new("RGB", (th, th), (255, 255, 255))
+            preview.paste(left, (0, 0)); preview.paste(right, (hw, 0))
 
         c = self.preview_canvas
         cw_canvas = max(c.winfo_width(), 100); ch_canvas = max(c.winfo_height(), 100)
@@ -699,6 +706,7 @@ class ReviewerApp(ctk.CTk):
 
     def _on_bbox_changed(self):
         self.bbox_a = list(self.editor_a.bbox); self.bbox_b = list(self.editor_b.bbox)
+        self._liquified = None  # bbox 变了，液化结果作废
         self._update_preview()
         self._auto_save_debounce()
 
@@ -738,7 +746,9 @@ class ReviewerApp(ctk.CTk):
             out_dir = self.input_dir / "审核输出" if self.input_dir else Path("审核输出")
             out_dir.mkdir(parents=True, exist_ok=True)
             result.save(out_dir / f"{pa.stem}.png", "PNG")
-            self.status.configure(text=f"液化已保存 {pa.stem}.png")
+            self._liquified = result
+            self._update_preview()
+            self.status.configure(text=f"液化已应用 {pa.stem}.png")
 
     def _fit_editors(self):
         self.editor_a.update_display(); self.editor_b.update_display()
@@ -754,6 +764,7 @@ class ReviewerApp(ctk.CTk):
         self.editor_b.set_image(self.img_b, self.bbox_b, self.ai_bbox_b, self.angle_b)
         self.lbl_angle_a.configure(text=f"{self.angle_a:+.1f}°")
         self.lbl_angle_b.configure(text=f"{self.angle_b:+.1f}°")
+        self._liquified = None
         self._update_preview()
         self.lbl_fname.configure(text=f"{pb.stem}  +  {pa.stem}")
         self.status.configure(text="已互换正反面")
