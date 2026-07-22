@@ -15,6 +15,7 @@ _datas = [
     ('logo_toolbar.png', '.'),
     ('logo_about.png', '.'),
     ('logo_placeholder.png', '.'),
+    ('preview_watermark.png', '.'),
 ]
 _u2net = PROJECT / 'models' / 'u2net.onnx'
 if _u2net.exists():

@@ -334,7 +334,8 @@ class ReviewerApp(ctk.CTk):
         self.input_dir: Optional[Path] = None
         self._preview_zoom = 1.0
         self._liquified: Optional[Image.Image] = None  # 液化修改后的结果
-        self._placeholder_img = None  # 空状态水印
+        self._preview_placeholder = None  # 预览水印
+        self._editor_placeholder = None  # 编辑器水印
 
         # 流式处理
         self._proc_done = 0
@@ -360,16 +361,21 @@ class ReviewerApp(ctk.CTk):
         # 编辑器空状态 placeholder：极暗深灰水印（若隐若现高级感）
         logo_placeholder_png = LOGO_DIR / "logo_placeholder.png"
         if logo_placeholder_png.exists():
-            self._placeholder_img = Image.open(str(logo_placeholder_png)).convert("RGBA")
-            BBoxEditor.set_placeholder(self._placeholder_img)
+            self._editor_placeholder = Image.open(str(logo_placeholder_png)).convert("RGBA")
+            BBoxEditor.set_placeholder(self._editor_placeholder)
         else:
-            self._placeholder_img = None
+            self._editor_placeholder = None
+
+        # 预览水印（独立图片，非 logo）
+        preview_watermark = LOGO_DIR / "preview_watermark.png"
+        if preview_watermark.exists():
+            self._preview_placeholder = Image.open(str(preview_watermark)).convert("RGBA")
+        else:
+            self._preview_placeholder = self._editor_placeholder
 
         self._build_ui()
         self.update_idletasks()
-        # 空状态水印：编辑器由 BBoxEditor._fit → _redraw 处理
-        # 预览 canvas 手动画一次
-        if self._placeholder_img:
+        if self._preview_placeholder:
             self._draw_preview_placeholder()
         self._status_loader.configure(text="模型加载中...")
         def _on_prewarm_done():
@@ -793,13 +799,13 @@ class ReviewerApp(ctk.CTk):
             self._draw_preview_placeholder()
 
     def _draw_preview_placeholder(self):
-        """空状态：预览 canvas 居中显示半透明水印 logo。"""
+        """空状态：预览 canvas 居中显示半透明水印。"""
         c = self.preview_canvas
-        if not self._placeholder_img:
+        if not self._preview_placeholder:
             return
         cw_canvas = max(c.winfo_width(), 100)
         ch_canvas = max(c.winfo_height(), 100)
-        ph = self._placeholder_img
+        ph = self._preview_placeholder
         pw, ph_h = ph.size
         s = min(cw_canvas / pw, ch_canvas / ph_h) * 0.4
         dw, dh = int(pw * s), int(ph_h * s)
