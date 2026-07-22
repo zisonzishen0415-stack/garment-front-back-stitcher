@@ -183,7 +183,7 @@ annotations.json 存在且完整？
 
 ---
 
-## 打包为 EXE
+## 打包为安装包
 
 ```bash
 pip install pyinstaller svgpathtools
@@ -195,11 +195,26 @@ python build_icon.py
 mkdir models
 cp ~/.u2net/u2net.onnx models/
 
-# 3. 构建单个 EXE
+# 3. 构建
 python -m PyInstaller garment-stitcher.spec
+
+# 4. 打包为安装程序（需安装 NSIS: winget install NSIS.NSIS）
+"C:\Program Files (x86)\NSIS\Bin\makensis.exe" installer.nsi
 ```
 
-构建产物：`dist/GarmentStitcher.exe`（约 127MB，单文件，双击即用）。
+构建产物：`dist/GarmentStitcher_Setup.exe`
+
+安装后目录结构：
+```
+C:\Program Files\GarmentStitcher\
+├── GarmentStitcher.exe      # 主程序
+├── uninstall.exe             # 卸载程序
+├── models\u2net.onnx         # AI 模型
+├── logo.ico / logo_*.png     # 品牌图标
+└── ...（Python 运行时 + 依赖库）
+```
+
+开始菜单 + 桌面快捷方式，控制面板可卸载。
 
 启动后预设行为：
 

@@ -2,10 +2,13 @@
 流程：选文件夹 → AI+CV 流式处理（完成一对立即可审）
 左预览 + 右编辑 + 角度旋钮
 """
-import sys, os, shutil, threading
-# PyInstaller onefile: 模型数据文件在 sys._MEIPASS 临时解压目录
+import sys, os
+# PyInstaller 打包时，优先用捆绑的 u2net.onnx 模型
+# PyInstaller onefile 会把文件解压到 sys._MEIPASS，模型在那里
 _EXE_DIR = sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(__file__)
 _BUNDLED_MODEL = os.path.join(_EXE_DIR, 'models', 'u2net.onnx')
+if os.path.exists(_BUNDLED_MODEL):
+    os.environ['U2NET_HOME'] = os.path.join(_EXE_DIR, 'models')
 
 import json
 import math
@@ -371,32 +374,9 @@ class ReviewerApp(ctk.CTk):
         self.update_idletasks()
         if self._preview_placeholder:
             self._draw_preview_placeholder()
-
-        # 首次运行：把捆绑的 u2net.onnx 复制到 ~/.u2net/（rembg 默认路径）
-        if os.path.exists(_BUNDLED_MODEL):
-            _dst = os.path.join(os.path.expanduser('~'), '.u2net', 'u2net.onnx')
-            if not os.path.exists(_dst):
-                self._status_loader.configure(text="释放模型中...")
-                def _copy_model():
-                    try:
-                        os.makedirs(os.path.dirname(_dst), exist_ok=True)
-                        shutil.copy2(_BUNDLED_MODEL, _dst)
-                    except Exception:
-                        pass
-                    self.after(0, lambda: (
-                        self._status_loader.configure(text="模型加载中..."),
-                        self.processor.prewarm(),
-                        self.after(200, self._check_prewarm)
-                    ))
-                threading.Thread(target=_copy_model, daemon=True).start()
-            else:
-                self._status_loader.configure(text="模型加载中...")
-                self.processor.prewarm()
-                self.after(200, self._check_prewarm)
-        else:
-            self._status_loader.configure(text="模型加载中...")
-            self.processor.prewarm()
-            self.after(200, self._check_prewarm)
+        self._status_loader.configure(text="模型加载中...")
+        self.processor.prewarm()
+        self.after(200, self._check_prewarm)
 
     def _check_prewarm(self):
         try:
@@ -445,15 +425,14 @@ class ReviewerApp(ctk.CTk):
                        command=self._export_single).pack(side="left", padx=2)
         ctk.CTkButton(bar, text="全部导出", width=70, command=self._export_all).pack(side="left", padx=2)
 
-        # Logo / 关于（右侧）
+        # Logo（右侧，点击显示关于）
         if self._logo_img:
-            self._lbl_logo = tk.Label(bar, image=self._logo_img, bg="#2B2B2B",
+            self._lbl_logo = tk.Label(bar, image=self._logo_img, bg=ctk.ThemeManager.theme["CTkFrame"]["fg_color"][1],
                                       cursor="hand2")
+            self._lbl_logo.pack(side="right", padx=(4, 2))
+            self._lbl_logo.bind("<Button-1>", self._show_about)
         else:
-            self._lbl_logo = tk.Label(bar, text="关于", fg="#999", bg="#2B2B2B",
-                                      font=ctk.CTkFont(size=10), cursor="hand2")
-        self._lbl_logo.pack(side="right", padx=(4, 2))
-        self._lbl_logo.bind("<Button-1>", self._show_about)
+            self._lbl_logo = None
 
         self.lbl_fname = ctk.CTkLabel(bar, text="", font=ctk.CTkFont(size=9), text_color="#999")
         self.lbl_fname.pack(side="right", padx=8)
@@ -523,7 +502,6 @@ class ReviewerApp(ctk.CTk):
         self.bind("<e>", lambda e: self._export_single()); self.bind("<E>", lambda e: self._export_single())
         self.bind("<s>", lambda e: self._export_single()); self.bind("<S>", lambda e: self._export_single())
         self.bind("<f>", lambda e: self._fit_editors()); self.bind("<F>", lambda e: self._fit_editors())
-        self.bind("<F1>", lambda e: self._show_about())
         self.bind("<x>", lambda e: self._swap_fb()); self.bind("<X>", lambda e: self._swap_fb())
         self.bind("<r>", lambda e: self._reset_rotation()); self.bind("<R>", lambda e: self._reset_rotation())
         # 句号逗号微调角度
@@ -755,8 +733,7 @@ class ReviewerApp(ctk.CTk):
         self.lbl_angle_a.configure(text=f"{self.angle_a:+.1f}°")
         self.lbl_angle_b.configure(text=f"{self.angle_b:+.1f}°")
         self._update_preview()
-
-    # ── 预览 ──────────────────────────────────────────────────
+        self.after(100, self._fit_editors)  # customtkinter 嵌套布局慢，补一刀确保 scale 正确
 
     @staticmethod
     def _natural_w(bbox):
@@ -1019,10 +996,7 @@ class ReviewerApp(ctk.CTk):
         logo_about_png = Path(__file__).parent / "logo_about.png"
         if logo_about_png.exists():
             logo = ImageTk.PhotoImage(Image.open(str(logo_about_png)))
-        w = AboutWindow(self, logo)
-        w.transient(self)
-        w.grab_set()
-        w.lift()
+        AboutWindow(self, logo)
 
 
 class AboutWindow(tk.Toplevel):
@@ -1031,50 +1005,24 @@ class AboutWindow(tk.Toplevel):
     def __init__(self, parent, logo):
         super().__init__(parent)
         self.title("关于")
-        self.geometry("780x480")
+        self.geometry("780x300")
         self.configure(bg="#1E1E1E")
         self.resizable(False, False)
-        self.transient(parent)
 
         if logo:
             lbl = tk.Label(self, image=logo, bg="#1E1E1E")
-            lbl.image = logo
-            lbl.pack(pady=(30, 8))
+            lbl.image = logo  # 防止 GC
+            lbl.pack(pady=(30, 12))
 
         info = tk.Label(self,
-                        text="服装样品正反面 AI+CV 拼接工具\n\n"
-                             "技术栈： rembg / customtkinter / Pillow / NumPy / SciPy\n"
-                             "完全离线运行，无需网络\n\n"
-                             "AI 模型缓存位置：~/.u2net/",
+                        text="Garment Front-Back Stitcher\n"
+                             "服装样品正反面 AI+CV 拼接工具\n\n"
+                             "技术栈： rembg · customtkinter · Pillow · NumPy/SciPy\n\n"
+                             "完全离线运行，无需网络",
                         bg="#1E1E1E", fg="#CCC",
                         font=("Microsoft YaHei UI", 11),
                         justify="center")
-        info.pack(pady=(4, 8))
-
-        u2net_dir = os.path.join(os.path.expanduser('~'), '.u2net')
-        btn_frame = tk.Frame(self, bg="#1E1E1E")
-        btn_frame.pack(pady=(4, 12))
-        self._status = tk.Label(btn_frame, text="",
-                                bg="#1E1E1E", fg="#999",
-                                font=("Microsoft YaHei UI", 9))
-        if os.path.isdir(u2net_dir):
-            tk.Button(btn_frame, text="清除 AI 模型缓存",
-                      bg="#555", fg="#CCC",
-                      font=("Microsoft YaHei UI", 9),
-                      command=self._clear_model,
-                      padx=12, pady=4).pack()
-        else:
-            self._status.configure(text="无模型缓存")
-        self._status.pack()
-
-    def _clear_model(self):
-        import shutil
-        u2net_dir = os.path.join(os.path.expanduser('~'), '.u2net')
-        try:
-            shutil.rmtree(u2net_dir)
-            self._status.configure(text="已清除，重启应用后自动恢复")
-        except Exception:
-            self._status.configure(text="清除失败，请手动删除 " + u2net_dir)
+        info.pack(pady=(8, 20))
 
 
 class DebugWindow(tk.Toplevel):

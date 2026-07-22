@@ -1,10 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller onefile 打包配置
-用法:
+"""PyInstaller onedir build config (for NSIS installer)
+Usage:
   python build_icon.py
   mkdir models && cp ~/.u2net/u2net.onnx models/
   python -m PyInstaller garment-stitcher.spec
-输出: dist/GarmentStitcher.exe (单文件，无需安装)
+  makensis installer.nsi
+Output: dist/GarmentStitcher_Setup.exe
 """
 from pathlib import Path
 
@@ -40,10 +41,6 @@ a = Analysis(
         'torch', 'tensorflow', 'keras',
         'sympy', 'pandas', 'pytest',
     ],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
-    cipher=None,
-    noarchive=False,
 )
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=None)
@@ -63,10 +60,16 @@ exe = EXE(
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
-    disable_windowed_traceback=False,
-    argv_emulation=False,
-    target_arch=None,
-    codesign_identity=None,
-    entitlements_file=None,
     icon='logo.ico',
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=True,
+    upx_exclude=[],
+    name='GarmentStitcher',
 )
