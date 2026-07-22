@@ -522,6 +522,7 @@ class ReviewerApp(ctk.CTk):
         if path:
             self.entry_dir.delete(0, "end")
             self.entry_dir.insert(0, path)
+            self._start_process()  # 选了文件夹就自动加载/处理
 
     def _start_process(self):
         d = self.entry_dir.get().strip()
@@ -611,12 +612,10 @@ class ReviewerApp(ctk.CTk):
         self._update_nav_buttons()
 
     def _save_ai_results(self):
-        """将 AI 检测结果写入 annotations.json（仅在还没有文件时）。"""
+        """将 AI 检测结果写入 annotations.json。再次运行时覆盖旧结果。"""
         if not self.input_dir or not self._results:
             return
         ann_path = self.input_dir / "annotations.json"
-        if ann_path.exists():
-            return  # 已有文件（可能是手动审核的），不覆盖
         for i, res in enumerate(self._results):
             if res is None or i >= len(self.pairs):
                 continue
