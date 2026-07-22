@@ -78,7 +78,7 @@ class BBoxEditor(tk.Canvas):
         self._last_fit_h = ch
         iw, ih = self.pil_img.size
         if ih > iw:
-            s = ch / ih * 0.90
+            s = ch / ih  # 竖向图：撑满高度，上下触边
         else:
             s = min(cw / iw, ch / ih) * 0.85
         self.scale = max(0.02, s)
