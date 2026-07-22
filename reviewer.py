@@ -313,8 +313,8 @@ class ReviewerApp(ctk.CTk):
         self.entry_dir.pack(side="left", padx=4)
         ctk.CTkButton(bar, text="浏览", width=50, command=self._pick_dir).pack(side="left", padx=2)
         ctk.CTkButton(bar, text="AI 处理", width=70, command=self._start_process).pack(side="left", padx=(10, 2))
-        self.btn_debug = ctk.CTkButton(bar, text="调试", width=50,
-                                        command=self._start_debug)
+        self.btn_debug = ctk.CTkButton(bar, text="调试", width=50, fg_color="#3B8ED0",
+                                        hover_color="#36719F", command=self._start_debug)
         self.btn_debug.pack(side="left", padx=2)
 
         ctk.CTkFrame(bar, width=1, height=24, fg_color="#555").pack(side="left", padx=10)
