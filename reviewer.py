@@ -596,8 +596,28 @@ class ReviewerApp(ctk.CTk):
 
     def _on_all_done(self):
         self._proc_done = self._proc_total
+        self._save_ai_results()  # AI 完成后写入 annotations.json
         self.status.configure(text=f"全部完成 — {self._proc_total} 对已就绪")
         self._update_nav_buttons()
+
+    def _save_ai_results(self):
+        """将 AI 检测结果写入 annotations.json（仅在还没有文件时）。"""
+        if not self.input_dir or not self._results:
+            return
+        ann_path = self.input_dir / "annotations.json"
+        if ann_path.exists():
+            return  # 已有文件（可能是手动审核的），不覆盖
+        for i, res in enumerate(self._results):
+            if res is None or i >= len(self.pairs):
+                continue
+            pa, pb = self.pairs[i]
+            bb_a, bb_b = res
+            if bb_a:
+                self.annotations[pa.name] = {"file": pa.name, "bbox": list(bb_a), "angle": 0.0}
+            if bb_b:
+                self.annotations[pb.name] = {"file": pb.name, "bbox": list(bb_b), "angle": 0.0}
+        data = {"source_dir": str(self.input_dir), "annotations": list(self.annotations.values())}
+        ann_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _update_nav_buttons(self):
         if self.pair_idx < self._proc_done - 1:
