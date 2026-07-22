@@ -522,7 +522,12 @@ class ReviewerApp(ctk.CTk):
         if path:
             self.entry_dir.delete(0, "end")
             self.entry_dir.insert(0, path)
-            self._start_process()  # 选了文件夹就自动加载/处理
+            d = Path(path)
+            ann = d / "annotations.json"
+            if ann.exists():
+                self._start_process()  # 有标注：秒加载
+            else:
+                self.status.configure(text="已选文件夹，点击「AI 处理」开始")
 
     def _start_process(self):
         d = self.entry_dir.get().strip()
