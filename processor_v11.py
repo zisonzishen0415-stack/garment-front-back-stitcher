@@ -214,19 +214,19 @@ class ImageProcessorV11:
         bbox_a = self._single_pipe_bbox(img_a)
         bbox_b = self._single_pipe_bbox(img_b)
 
-        # 1. Mask 可视化
+        # 1. 初步检测：rembg 分割 → Mask
         mask_a = self._get_mask_arr(img_a)
         mask_b = self._get_mask_arr(img_b)
-        debug.append(("Mask A", self._debug_mask_overlay(img_a, mask_a)))
-        debug.append(("Mask B", self._debug_mask_overlay(img_b, mask_b)))
+        debug.append(("① rembg 分割 A", self._debug_mask_overlay(img_a, mask_a)))
+        debug.append(("① rembg 分割 B", self._debug_mask_overlay(img_b, mask_b)))
 
-        # 2. AI bbox（裁剪前）
+        # 2. 从 Mask 提取 BBox
         if bbox_a:
-            debug.append(("AI BBox A (裁剪前)", self._debug_bbox_overlay(img_a, bbox_a, color=(255, 165, 0))))
+            debug.append(("② 初步 BBox A", self._debug_bbox_overlay(img_a, bbox_a, color=(255, 165, 0))))
         if bbox_b:
-            debug.append(("AI BBox B (裁剪前)", self._debug_bbox_overlay(img_b, bbox_b, color=(255, 165, 0))))
+            debug.append(("② 初步 BBox B", self._debug_bbox_overlay(img_b, bbox_b, color=(255, 165, 0))))
 
-        # 3. 宽度分布 + 共识图
+        # 3. 联合轮廓匹配：宽度分布 + 共识区间
         ys_a, lefts_a, rights_a = self._vertical_profile(mask_a)
         ys_b, lefts_b, rights_b = self._vertical_profile(mask_b)
 
@@ -246,7 +246,7 @@ class ImageProcessorV11:
                 consensus = ratio < CONSENSUS_RATIO_THRESHOLD
                 cy_min, cy_max = self._largest_consensus_interval(uy, consensus)
 
-                debug.append(("宽度分布 & 共识区间",
+                debug.append(("③ 宽度分布 & 共识区间",
                               self._debug_profile_chart(uy, wi_a, wi_b, ratio, consensus, cy_min, cy_max)))
 
                 if cy_max - cy_min >= 50:
@@ -261,19 +261,19 @@ class ImageProcessorV11:
         if bbox_a:
             rod_bbox_a = self._trim_rod_bottom(img_a, mask_a, bbox_a)
             if rod_bbox_a != bbox_a:
-                debug.append(("Rod 裁剪 A (黄=前 绿=后)", self._debug_rod_compare(img_a, bbox_a, rod_bbox_a)))
+                debug.append(("④ 杆子裁剪 A", self._debug_rod_compare(img_a, bbox_a, rod_bbox_a)))
             bbox_a = rod_bbox_a
         if bbox_b:
             rod_bbox_b = self._trim_rod_bottom(img_b, mask_b, bbox_b)
             if rod_bbox_b != bbox_b:
-                debug.append(("Rod 裁剪 B (黄=前 绿=后)", self._debug_rod_compare(img_b, bbox_b, rod_bbox_b)))
+                debug.append(("④ 杆子裁剪 B", self._debug_rod_compare(img_b, bbox_b, rod_bbox_b)))
             bbox_b = rod_bbox_b
 
         # 5. 最终 bbox
         if bbox_a:
-            debug.append(("结果 A", self._debug_bbox_overlay(img_a, bbox_a, color=(0, 255, 0))))
+            debug.append(("⑤ 最终结果 A", self._debug_bbox_overlay(img_a, bbox_a, color=(0, 255, 0))))
         if bbox_b:
-            debug.append(("结果 B", self._debug_bbox_overlay(img_b, bbox_b, color=(0, 255, 0))))
+            debug.append(("⑤ 最终结果 B", self._debug_bbox_overlay(img_b, bbox_b, color=(0, 255, 0))))
 
         return bbox_a, bbox_b, debug
 
