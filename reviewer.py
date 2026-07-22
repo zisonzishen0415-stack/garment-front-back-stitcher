@@ -701,6 +701,7 @@ class ReviewerApp(ctk.CTk):
         if not self.img_a or not self.img_b: return
         if self._liquified:
             preview = self._liquified
+            th = preview.width
         else:
             unified_cw = max(self._natural_w(self.bbox_a), self._natural_w(self.bbox_b))
             crop_a = self._simple_crop(self.img_a, self.bbox_a, "right", unified_cw, self.angle_a)
@@ -762,23 +763,7 @@ class ReviewerApp(ctk.CTk):
     def _liquify(self):
         """对当前拼接结果打开液化工具"""
         if not self.img_a or not self.img_b: return
-        # 生成当前拼接预览（全分辨率）
-        unified_cw = max(self._natural_w(self.bbox_a), self._natural_w(self.bbox_b))
-        crop_a = self._simple_crop(self.img_a, self.bbox_a, "right", unified_cw, self.angle_a)
-        crop_b = self._simple_crop(self.img_b, self.bbox_b, "left", unified_cw, self.angle_b)
-        if crop_a.width != crop_b.width:
-            tw = max(crop_a.width, crop_b.width); th = tw * 2
-            for crp, is_a in [(crop_a, True), (crop_b, False)]:
-                if crp.width != tw:
-                    tmp = Image.new("RGB", (tw, th), (255, 255, 255))
-                    tmp.paste(crp, ((tw - crp.width)//2, (th - crp.height)//2))
-                    if is_a: crop_a = tmp
-                    else:    crop_b = tmp
-        th = min(crop_a.height, crop_b.height); th += th % 2; hw = th // 2
-        stitched = Image.new("RGB", (th, th), (255, 255, 255))
-        stitched.paste(crop_a.resize((hw, th), Image.LANCZOS), (0, 0))
-        stitched.paste(crop_b.resize((hw, th), Image.LANCZOS), (hw, 0))
-
+        stitched = self._stitch_current()
         pa = self.pairs[self.pair_idx][0]
         tool = LiquifyTool(stitched, f"液化 — {pa.stem}.png",
                            on_apply=lambda result: self._on_liquify_done(result, pa))
@@ -786,12 +771,9 @@ class ReviewerApp(ctk.CTk):
 
     def _on_liquify_done(self, result, pa):
         if result:
-            out_dir = self.input_dir / "审核输出" if self.input_dir else Path("审核输出")
-            out_dir.mkdir(parents=True, exist_ok=True)
-            result.save(out_dir / f"{pa.stem}.png", "PNG")
             self._liquified = result
             self._update_preview()
-            self.status.configure(text=f"液化已应用 {pa.stem}.png")
+            self.status.configure(text=f"液化已应用，导出时生效")
 
     def _fit_editors(self):
         self.editor_a.update_display(); self.editor_b.update_display()
@@ -841,6 +823,12 @@ class ReviewerApp(ctk.CTk):
         pa, pb = self.pairs[self.pair_idx]
         out_dir = self.input_dir / "审核输出" if self.input_dir else Path("审核输出")
         out_dir.mkdir(parents=True, exist_ok=True)
+        result = self._liquified or self._stitch_current()
+        result.save(out_dir / f"{pa.stem}.png", "PNG")
+        self.status.configure(text=f"已导出 {pa.stem}.png")
+
+    def _stitch_current(self):
+        """生成当前 bbox/角度的拼接结果（不含液化），用于导出和液化入口。"""
         unified_cw = max(self._natural_w(self.bbox_a), self._natural_w(self.bbox_b))
         crop_a = self._simple_crop(self.img_a, self.bbox_a, "right", unified_cw, self.angle_a)
         crop_b = self._simple_crop(self.img_b, self.bbox_b, "left", unified_cw, self.angle_b)
@@ -856,8 +844,7 @@ class ReviewerApp(ctk.CTk):
         result = Image.new("RGB", (th, th), (255, 255, 255))
         result.paste(crop_a.resize((hw, th), Image.LANCZOS), (0, 0))
         result.paste(crop_b.resize((hw, th), Image.LANCZOS), (hw, 0))
-        result.save(out_dir / f"{pa.stem}.png", "PNG")
-        self.status.configure(text=f"已导出 {pa.stem}.png")
+        return result
 
     def _export_all(self):
         if not self.input_dir: return
@@ -866,6 +853,13 @@ class ReviewerApp(ctk.CTk):
         for i in range(self._proc_done):
             pa, pb = self.pairs[i]
             if i == self.pair_idx:
+                if self._liquified:
+                    try:
+                        self._liquified.save(out_dir / f"{pa.stem}.png", "PNG")
+                        ok += 1
+                    except Exception:
+                        pass
+                    continue
                 ba, bb = list(self.bbox_a), list(self.bbox_b)
                 aa, ab = self.angle_a, self.angle_b
             else:
