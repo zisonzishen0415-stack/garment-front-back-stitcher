@@ -609,12 +609,10 @@ class ReviewerApp(ctk.CTk):
             img = img.rotate(angle, Image.BICUBIC, center=(cx, cy),
                              expand=False, fillcolor=(255, 255, 255))
         w, h = img.size; x1, y1, x2, y2 = bbox
-        bcy = (y1 + y2) / 2; bw = x2 - x1
+        bcy = (y1 + y2) / 2; bcx = (x1 + x2) / 2
         crop_h = crop_w * 2
-        if anchor == "right":
-            right = min(w, int(x2 + bw * MARGIN)); cx = right - crop_w
-        else:
-            left = max(0, int(x1 - bw * MARGIN)); cx = left
+        # bbox 居中于裁切窗口，左右余量对称
+        cx = int(bcx - crop_w / 2)
         if cx < 0: cx = 0
         if cx + crop_w > w: cx = w - crop_w
         cy = int(bcy - crop_h / 2)
@@ -638,12 +636,8 @@ class ReviewerApp(ctk.CTk):
         th = min(crop_a.height, crop_b.height); th += th % 2; hw = th // 2
         left = crop_a.resize((hw, th), Image.LANCZOS)
         right = crop_b.resize((hw, th), Image.LANCZOS)
-        # 四周边距（预览画布比例），避免袖子贴边
-        margin = int(th * 0.04)
-        padded = th + margin * 2
-        preview = Image.new("RGB", (padded, padded), (255, 255, 255))
-        preview.paste(left, (margin, margin))
-        preview.paste(right, (margin + hw, margin))
+        preview = Image.new("RGB", (th, th), (255, 255, 255))
+        preview.paste(left, (0, 0)); preview.paste(right, (hw, 0))
 
         c = self.preview_canvas
         cw_canvas = max(c.winfo_width(), 100); ch_canvas = max(c.winfo_height(), 100)
