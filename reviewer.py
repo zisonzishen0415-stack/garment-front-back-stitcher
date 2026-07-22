@@ -35,6 +35,11 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif"}
 
 class BBoxEditor(tk.Canvas):
     """bbox 编辑器：缩放/平移/角点+边中点拖拽"""
+    _placeholder = None  # 类属性：空编辑器居中显示的品牌 logo
+
+    @classmethod
+    def set_placeholder(cls, img):
+        cls._placeholder = img
 
     def __init__(self, parent, on_change=None, **kw):
         super().__init__(parent, bg="#1E1E1E", highlightthickness=0, **kw)
@@ -116,7 +121,18 @@ class BBoxEditor(tk.Canvas):
     def _redraw(self):
         """完整重绘：背景图 + 叠加层"""
         self.delete("all")
-        if not self.pil_img: return
+        if not self.pil_img:
+            # 空编辑器：显示品牌 logo 居中
+            ph = self._placeholder
+            if ph is not None:
+                cw = max(self.winfo_width(), 50)
+                ch = max(self.winfo_height(), 50)
+                pw, ph_h = ph.size
+                s = min(cw / pw, ch / ph_h) * 0.4
+                dw, dh = int(pw * s), int(ph_h * s)
+                self._photo = ImageTk.PhotoImage(ph.resize((dw, dh), Image.LANCZOS))
+                self.create_image(cw // 2, ch // 2, anchor=tk.CENTER, image=self._photo, tags="all")
+            return
 
         # 背景图
         iw, ih = self.pil_img.size
@@ -336,6 +352,11 @@ class ReviewerApp(ctk.CTk):
         logo_png = LOGO_DIR / "logo_toolbar.png"
         if logo_png.exists():
             self._logo_img = ImageTk.PhotoImage(Image.open(str(logo_png)))
+
+        # 编辑器空状态 placeholder：极暗深灰水印（若隐若现高级感）
+        logo_placeholder_png = LOGO_DIR / "logo_placeholder.png"
+        if logo_placeholder_png.exists():
+            BBoxEditor.set_placeholder(Image.open(str(logo_placeholder_png)).convert("RGBA"))
 
         self._build_ui()
 
