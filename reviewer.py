@@ -447,7 +447,7 @@ class ReviewerApp(ctk.CTk):
 
         # Logo（右侧，点击显示关于）
         if self._logo_img:
-            self._lbl_logo = tk.Label(bar, image=self._logo_img, bg=ctk.ThemeManager.theme["CTkFrame"]["fg_color"][1],
+            self._lbl_logo = tk.Label(bar, image=self._logo_img, bg="#2B2B2B",
                                       cursor="hand2")
             self._lbl_logo.pack(side="right", padx=(4, 2))
             self._lbl_logo.bind("<Button-1>", self._show_about)
@@ -522,6 +522,7 @@ class ReviewerApp(ctk.CTk):
         self.bind("<e>", lambda e: self._export_single()); self.bind("<E>", lambda e: self._export_single())
         self.bind("<s>", lambda e: self._export_single()); self.bind("<S>", lambda e: self._export_single())
         self.bind("<f>", lambda e: self._fit_editors()); self.bind("<F>", lambda e: self._fit_editors())
+        self.bind("<F1>", lambda e: self._show_about())
         self.bind("<x>", lambda e: self._swap_fb()); self.bind("<X>", lambda e: self._swap_fb())
         self.bind("<r>", lambda e: self._reset_rotation()); self.bind("<R>", lambda e: self._reset_rotation())
         # 句号逗号微调角度
