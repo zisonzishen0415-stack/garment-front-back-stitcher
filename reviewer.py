@@ -45,7 +45,7 @@ class BBoxEditor(tk.Canvas):
         self._drag_box = None
         self._pan_data = None
         self._on_change = on_change
-        self._needs_fit = False
+        self._last_fit_w = 0
 
         self.bind("<ButtonPress-1>", self._on_down)
         self.bind("<B1-Motion>", self._on_move)
@@ -62,16 +62,20 @@ class BBoxEditor(tk.Canvas):
         self.bbox = list(bbox)
         self.angle = float(angle)
         self.ai_bbox = list(ai_bbox) if ai_bbox else None
-        self._needs_fit = True
+        # _on_configure 或 _fit 决定何时布局；set_image 先跑一次
+        self._last_fit_w = 0  # 追踪上次 fit 的画布尺寸，避免重复重绘
         self._fit()
 
     def _fit(self):
         if not self.pil_img: return
         cw = self.winfo_width()
         ch = self.winfo_height()
-        if cw < 20 or ch < 20:
-            return  # 画布尚未布局，等 Configure 事件触发
-        self._needs_fit = False
+        if cw < 30 or ch < 30:
+            return
+        if abs(cw - self._last_fit_w) < 4 and abs(ch - getattr(self, '_last_fit_h', 0)) < 4:
+            return  # 尺寸未变，跳过
+        self._last_fit_w = cw
+        self._last_fit_h = ch
         iw, ih = self.pil_img.size
         s = ch / ih * 0.90
         self.scale = max(0.02, s)
@@ -80,8 +84,7 @@ class BBoxEditor(tk.Canvas):
         self._redraw()
 
     def _on_configure(self, event):
-        if self._needs_fit:
-            self._fit()
+        self._fit()
 
     def _to_canvas(self, ix, iy):
         return (ix * self.scale + self.ox, iy * self.scale + self.oy)
