@@ -335,7 +335,6 @@ class ReviewerApp(ctk.CTk):
         self._preview_zoom = 1.0
         self._liquified: Optional[Image.Image] = None  # 液化修改后的结果
         self._preview_placeholder = None  # 预览水印
-        self._editor_placeholder = None  # 编辑器水印
 
         # 流式处理
         self._proc_done = 0
@@ -361,17 +360,11 @@ class ReviewerApp(ctk.CTk):
         # 编辑器空状态 placeholder：极暗深灰水印（若隐若现高级感）
         logo_placeholder_png = LOGO_DIR / "logo_placeholder.png"
         if logo_placeholder_png.exists():
-            self._editor_placeholder = Image.open(str(logo_placeholder_png)).convert("RGBA")
-            BBoxEditor.set_placeholder(self._editor_placeholder)
+            ph = Image.open(str(logo_placeholder_png)).convert("RGBA")
+            BBoxEditor.set_placeholder(ph)
+            self._preview_placeholder = ph
         else:
-            self._editor_placeholder = None
-
-        # 预览水印（独立图片，非 logo）
-        preview_watermark = LOGO_DIR / "preview_watermark.png"
-        if preview_watermark.exists():
-            self._preview_placeholder = Image.open(str(preview_watermark)).convert("RGBA")
-        else:
-            self._preview_placeholder = self._editor_placeholder
+            self._preview_placeholder = None
 
         self._build_ui()
         self.update_idletasks()
