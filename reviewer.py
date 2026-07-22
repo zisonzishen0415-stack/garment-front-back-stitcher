@@ -801,9 +801,8 @@ class ReviewerApp(ctk.CTk):
         ch_canvas = max(c.winfo_height(), 100)
         ph = self._placeholder_img
         pw, ph_h = ph.size
-        # 撑满 canvas 宽度，保持比例
-        dw = max(60, int(cw_canvas * 0.55))
-        dh = int(dw * ph_h / pw)
+        s = min(cw_canvas / pw, ch_canvas / ph_h) * 0.4
+        dw, dh = int(pw * s), int(ph_h * s)
         photo = ImageTk.PhotoImage(ph.resize((dw, dh), Image.LANCZOS))
         c.delete("all")
         c.create_image(cw_canvas // 2, ch_canvas // 2, anchor=tk.CENTER, image=photo)
