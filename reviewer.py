@@ -64,7 +64,7 @@ class BBoxEditor(tk.Canvas):
 
     def _fit(self):
         if not self.pil_img: return
-        self.update_idletasks()
+        self.winfo_toplevel().update_idletasks()
         cw = max(self.winfo_width(), 50)
         ch = max(self.winfo_height(), 50)
         iw, ih = self.pil_img.size
@@ -572,7 +572,8 @@ class ReviewerApp(ctk.CTk):
         self.lbl_angle_a.configure(text=f"{self.angle_a:+.1f}°")
         self.lbl_angle_b.configure(text=f"{self.angle_b:+.1f}°")
         self._update_preview()
-        self.after(100, self._fit_editors)
+        self.after(150, self._fit_editors)
+        self.after(500, self._fit_editors)  # 保险：布局可能延迟
 
     # ── 预览 ──────────────────────────────────────────────────
 
