@@ -85,9 +85,12 @@ class ImageProcessorV11:
 
     # -- rembg 单管道 ----------------------------------------------------
 
-    def _single_pipe_bbox(self, img: Image.Image) -> Optional[tuple[int, int, int, int]]:
-        """单管道：原始图 → rembg → bbox（v11: 只用对比度增强，效果最好）"""
-        # v11 用对比度增强做 rembg，对暗色衣物/人台分离效果较好
+    def _single_pipe(self, img: Image.Image) -> tuple[Optional[tuple[int, int, int, int]], np.ndarray]:
+        """单管道：对比度增强 → rembg → (bbox, mask)。
+
+        v11 用对比度增强做 rembg，对暗色衣物/人台分离效果较好。
+        一次 rembg 推理同时产出 bbox 和 mask，避免重复调用。
+        """
         enhanced = ImageEnhance.Contrast(img).enhance(1.4)
         from rembg import remove
         mask = remove(enhanced, session=self._get_session(), only_mask=True)
@@ -100,21 +103,20 @@ class ImageProcessorV11:
         mask_arr = np.array(mask)
         rows, cols = np.where(mask_arr > 30)
         if len(rows) < 100:
-            return None
-        return (int(cols.min()), int(rows.min()),
+            return None, mask_arr
+        bbox = (int(cols.min()), int(rows.min()),
                 int(cols.max()), int(rows.max()))
+        return bbox, mask_arr
+
+    def _single_pipe_bbox(self, img: Image.Image):
+        """向后兼容：只返回 bbox。新代码请用 _single_pipe。"""
+        bbox, _ = self._single_pipe(img)
+        return bbox
 
     def _get_mask_arr(self, img: Image.Image) -> np.ndarray:
-        """获取原始图的mask（不增强，用于轮廓分析）"""
-        from rembg import remove
-        mask = remove(img, session=self._get_session(), only_mask=True)
-        w, h = img.size
-        if mask.size != (w, h):
-            if mask.size == (h, w):
-                mask = mask.transpose(Image.Transpose.TRANSPOSE)
-            else:
-                mask = mask.resize((w, h), Image.LANCZOS)
-        return np.array(mask)
+        """向后兼容：只返回 mask。新代码请用 _single_pipe。"""
+        _, mask = self._single_pipe(img)
+        return mask
 
     # -- 联合轮廓分析 ----------------------------------------------------
 
@@ -157,16 +159,13 @@ class ImageProcessorV11:
                 min(mask_arr.shape[1], int(c.max())), yi + int(r.max()))
 
     def _joint_detect(self, img_a, img_b):
-        """v11: 单管道 rembg bbox + 简单共识匹配 + 杆子底部裁剪。
+        """v11: 单管道 rembg bbox + 联合轮廓共识匹配 + 杆子底部裁剪。
 
+        每张图只跑一次 rembg（_single_pipe 同时返回 bbox + mask），
         共识区间直接作为最终 bbox，不做 trim-only 约束。
         """
-        bbox_a = self._single_pipe_bbox(img_a)
-        bbox_b = self._single_pipe_bbox(img_b)
-
-        # 获取原始 mask 跑轮廓分析
-        mask_a = self._get_mask_arr(img_a)
-        mask_b = self._get_mask_arr(img_b)
+        bbox_a, mask_a = self._single_pipe(img_a)
+        bbox_b, mask_b = self._single_pipe(img_b)
 
         ys_a, lefts_a, rights_a = self._vertical_profile(mask_a)
         ys_b, lefts_b, rights_b = self._vertical_profile(mask_b)
@@ -211,12 +210,10 @@ class ImageProcessorV11:
         """
         debug = []
 
-        bbox_a = self._single_pipe_bbox(img_a)
-        bbox_b = self._single_pipe_bbox(img_b)
+        bbox_a, mask_a = self._single_pipe(img_a)
+        bbox_b, mask_b = self._single_pipe(img_b)
 
         # 1. 初步检测：rembg 分割 → Mask
-        mask_a = self._get_mask_arr(img_a)
-        mask_b = self._get_mask_arr(img_b)
         debug.append(("① rembg 分割 A", self._debug_mask_overlay(img_a, mask_a)))
         debug.append(("① rembg 分割 B", self._debug_mask_overlay(img_b, mask_b)))
 
