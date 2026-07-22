@@ -640,7 +640,7 @@ class ReviewerApp(ctk.CTk):
 
         c = self.preview_canvas
         cw_canvas = max(c.winfo_width(), 100); ch_canvas = max(c.winfo_height(), 100)
-        display_size = min(cw_canvas, ch_canvas) - 20
+        display_size = min(cw_canvas, ch_canvas)
         ds = max(display_size, 100)
         if th != ds:
             preview = preview.resize((ds, ds), Image.LANCZOS)
