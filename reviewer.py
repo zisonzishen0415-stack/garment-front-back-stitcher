@@ -849,8 +849,11 @@ class DebugWindow(tk.Toplevel):
 
         def _on_mousewheel(event):
             canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
-        self.protocol("WM_DELETE_WINDOW", lambda: self.destroy())
+
+        # 绑定到画布（仅当鼠标在画布上方时生效），避免全局泄漏
+        canvas.bind("<MouseWheel>", _on_mousewheel)
+        canvas.bind("<Enter>", lambda e: canvas.focus_set())
+        self.bind("<Destroy>", lambda e: canvas.unbind_all("<MouseWheel>"))
 
 
 def main():

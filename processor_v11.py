@@ -259,13 +259,13 @@ class ImageProcessorV11:
 
         # 4. 杆子裁剪前后对比
         if bbox_a:
-            rod_bbox_a = self._trim_rod_bottom(img_a, mask_a, list(bbox_a))
-            if rod_bbox_a != tuple(bbox_a):
+            rod_bbox_a = self._trim_rod_bottom(img_a, mask_a, bbox_a)
+            if rod_bbox_a != bbox_a:
                 debug.append(("Rod 裁剪 A (黄=前 绿=后)", self._debug_rod_compare(img_a, bbox_a, rod_bbox_a)))
             bbox_a = rod_bbox_a
         if bbox_b:
-            rod_bbox_b = self._trim_rod_bottom(img_b, mask_b, list(bbox_b))
-            if rod_bbox_b != tuple(bbox_b):
+            rod_bbox_b = self._trim_rod_bottom(img_b, mask_b, bbox_b)
+            if rod_bbox_b != bbox_b:
                 debug.append(("Rod 裁剪 B (黄=前 绿=后)", self._debug_rod_compare(img_b, bbox_b, rod_bbox_b)))
             bbox_b = rod_bbox_b
 
