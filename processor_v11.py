@@ -326,14 +326,22 @@ class ImageProcessorV11:
     @staticmethod
     def _debug_profile_chart(uy, wi_a, wi_b, ratio, consensus, cy_min, cy_max):
         """绘制宽度分布 + 共识区间图表（PIL 纯绘图，不依赖 matplotlib）。"""
-        from PIL import ImageDraw
-        w_img, h_img = 700, 400
-        pad_t, pad_b, pad_l, pad_r = 40, 30, 60, 30
+        from PIL import ImageDraw, ImageFont
+        w_img, h_img = 900, 520
+        pad_t, pad_b, pad_l, pad_r = 50, 30, 80, 20
         pw = w_img - pad_l - pad_r
         ph = h_img - pad_t - pad_b
 
-        img = Image.new("RGB", (w_img, h_img), (30, 30, 30))
+        img = Image.new("RGB", (w_img, h_img), (28, 28, 30))
         draw = ImageDraw.Draw(img)
+
+        try:
+            font_s = ImageFont.truetype("msyh.ttc", 11)   # 微软雅黑
+        except Exception:
+            try:
+                font_s = ImageFont.truetype("simhei.ttf", 11)
+            except Exception:
+                font_s = ImageFont.load_default()
 
         n = len(uy)
         y2px = lambda v: pad_t + int(ph * (v - uy[0]) / (uy[-1] - uy[0] + 1))
@@ -347,44 +355,57 @@ class ImageProcessorV11:
         for i in range(n - 1):
             if consensus[i]:
                 y0, y1 = y2px(uy[i]), y2px(uy[i + 1])
-                draw.rectangle([pad_l, y0, pad_l + pw, y1], fill=(40, 70, 40))
+                draw.rectangle([pad_l, y0, pad_l + pw, y1], fill=(35, 65, 35))
 
-        # 共识区间绿框
+        # 共识区间边界绿框
         if cy_max > cy_min:
             yc0, yc1 = y2px(cy_min), y2px(cy_max)
-            draw.rectangle([pad_l, yc0, pad_l + pw, yc1], outline=(0, 200, 0), width=3)
+            draw.rectangle([pad_l, yc0, pad_l + pw, yc1], outline=(0, 220, 0), width=3)
 
-        # 宽度曲线 A（蓝）、B（红）
-        step = max(1, n // 500)
+        # 宽度曲线：正面（蓝）、反面（红）
+        step = max(1, n // 600)
         pts_a = [(val2px(wi_a[i], 0, w_max), y2px(uy[i])) for i in range(0, n, step)]
         pts_b = [(val2px(wi_b[i], 0, w_max), y2px(uy[i])) for i in range(0, n, step)]
-        for pts, color in [(pts_a, (0, 150, 255)), (pts_b, (255, 100, 100))]:
+        for pts, color, w in [(pts_a, (60, 140, 255), 2), (pts_b, (255, 90, 90), 2)]:
             for j in range(len(pts) - 1):
-                draw.line([pts[j][0], pts[j][1], pts[j + 1][0], pts[j + 1][1]], fill=color, width=2)
+                draw.line([pts[j][0], pts[j][1], pts[j + 1][0], pts[j + 1][1]],
+                          fill=color, width=w)
 
-        # 比率曲线（黄色虚线）
+        # 比率曲线（黄色）
         r_pts = [(val2px(ratio[i], r_min, r_max), y2px(uy[i])) for i in range(0, n, step)]
         for j in range(0, len(r_pts) - 1, 2):
             draw.line([r_pts[j][0], r_pts[j][1], r_pts[j + 1][0], r_pts[j + 1][1]],
-                      fill=(255, 255, 100), width=1)
+                      fill=(255, 230, 80), width=1)
 
-        # 阈值线
+        # 阈值线（黄色虚线）
         thr_x = val2px(CONSENSUS_RATIO_THRESHOLD, r_min, r_max)
-        # 阈值线（手绘虚线：每 6px 画 6px 段，兼容低版本 Pillow）
         for yy in range(pad_t, pad_t + ph, 12):
             draw.line([thr_x, yy, thr_x, min(yy + 6, pad_t + ph)],
-                      fill=(255, 255, 100), width=1)
+                      fill=(255, 230, 80), width=1)
 
-        # 图例
-        from PIL import ImageFont
-        try:
-            font = ImageFont.truetype("consola.ttf", 12)
-        except Exception:
-            font = ImageFont.load_default()
-        draw.text((5, pad_t + 5), "W", fill=(0, 150, 255), font=font)
-        draw.text((5, pad_t + 20), "B", fill=(255, 100, 100), font=font)
-        draw.text((5, pad_t + 35), "R", fill=(255, 255, 100), font=font)
-        draw.text((w_img - 55, pad_t + 5), f"thr={CONSENSUS_RATIO_THRESHOLD}", fill=(255, 255, 100), font=font)
+        # axis: Y 轴刻度标记
+        y_top = pad_t; y_bot = pad_t + ph
+        for frac in [0, 0.25, 0.5, 0.75, 1.0]:
+            yy = y_top + int(ph * frac)
+            draw.line([pad_l - 4, yy, pad_l, yy], fill=(150, 150, 150))
+
+        # ── 图例 ──
+        lx, ly = pad_l + 8, 8
+        # 蓝色块 + "正面宽度"
+        draw.rectangle([lx, ly, lx + 14, ly + 10], fill=(60, 140, 255))
+        draw.text((lx + 18, ly - 1), "正面服装宽度(px)", fill=(180, 180, 180), font=font_s)
+        # 红色块
+        draw.rectangle([lx + 160, ly, lx + 174, ly + 10], fill=(255, 90, 90))
+        draw.text((lx + 178, ly - 1), "反面服装宽度(px)", fill=(180, 180, 180), font=font_s)
+        # 黄色块
+        draw.rectangle([lx + 340, ly, lx + 354, ly + 10], fill=(255, 230, 80))
+        draw.text((lx + 358, ly - 1), "宽度比 max/min", fill=(180, 180, 180), font=font_s)
+        # 阈值
+        draw.text((lx + 490, ly - 1),
+                  f"共识阈值={CONSENSUS_RATIO_THRESHOLD}", fill=(255, 230, 80), font=font_s)
+        # 绿色 = 共识区间
+        draw.rectangle([lx, ly + 14, lx + 14, ly + 24], fill=(35, 65, 35))
+        draw.text((lx + 18, ly + 13), "共识区间 (宽度比<1.35)", fill=(180, 180, 180), font=font_s)
 
         return img
 

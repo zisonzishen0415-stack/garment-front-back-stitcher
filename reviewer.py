@@ -872,7 +872,8 @@ class DebugWindow(tk.Toplevel):
         scrollbar.pack(side="right", fill="y", pady=8)
 
         self._photos = []
-        MAX_W = 480
+        PAIR_W = 460   # 每张 A/B 配对图宽度
+        FULL_W = 900   # 单张全宽图（图表等）
 
         for name in order:
             data = steps[name]
@@ -889,10 +890,12 @@ class DebugWindow(tk.Toplevel):
                 if img is None:
                     continue
                 w, h = img.size
-                if w > MAX_W:
-                    img = img.resize((MAX_W, int(h * MAX_W / w)), Image.LANCZOS)
+                max_w = PAIR_W if img_b is not None else FULL_W
+                if w > max_w:
+                    img = img.resize((max_w, int(h * max_w / w)), Image.LANCZOS)
                 photo = ImageTk.PhotoImage(img)
                 self._photos.append(photo)
+                side = "left" if img is img_a else "left"  # pack both side=left for flow
                 tk.Label(pair_frame, image=photo, bg="#1E1E1E").pack(side="left", padx=3)
 
         def _on_mousewheel(event):
