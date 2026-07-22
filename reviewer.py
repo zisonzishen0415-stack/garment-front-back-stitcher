@@ -298,6 +298,7 @@ class ReviewerApp(ctk.CTk):
         self._results: list = []
         self._first_loaded = False
 
+        self.btn_debug = None
         self._build_ui()
 
     # ── UI ────────────────────────────────────────────────────
@@ -311,6 +312,9 @@ class ReviewerApp(ctk.CTk):
         self.entry_dir.pack(side="left", padx=4)
         ctk.CTkButton(bar, text="浏览", width=50, command=self._pick_dir).pack(side="left", padx=2)
         ctk.CTkButton(bar, text="AI 处理", width=70, command=self._start_process).pack(side="left", padx=(10, 2))
+        self.btn_debug = ctk.CTkButton(bar, text="调试", width=50, fg_color="#555",
+                                        command=self._start_debug, state="disabled")
+        self.btn_debug.pack(side="left", padx=2)
 
         ctk.CTkFrame(bar, width=1, height=24, fg_color="#555").pack(side="left", padx=10)
 
@@ -498,6 +502,8 @@ class ReviewerApp(ctk.CTk):
 
     def _on_all_done(self):
         self._proc_done = self._proc_total
+        if self.btn_debug:
+            self.btn_debug.configure(state="normal")
         self.status.configure(text=f"全部完成 — {self._proc_total} 对已就绪")
         self._update_nav_buttons()
 
@@ -791,6 +797,60 @@ class ReviewerApp(ctk.CTk):
             except Exception:
                 pass
         self.status.configure(text=f"全部导出完成: {ok}/{self._proc_done} → {out_dir}")
+
+    def _start_debug(self):
+        """对当前第一对运行调试检测并弹出可视化窗口。"""
+        if not self.pairs or self._proc_done < 1:
+            return
+        pa, pb = self.pairs[0]
+        try:
+            ia = ImageOps.exif_transpose(Image.open(pa)).convert("RGB")
+            ib = ImageOps.exif_transpose(Image.open(pb)).convert("RGB")
+            _, _, debug_entries = self.processor._joint_detect_debug(ia, ib)
+            DebugWindow(self, debug_entries, f"调试 — {pa.stem} + {pb.stem}")
+        except Exception as e:
+            self.status.configure(text=f"调试失败: {e}")
+
+
+class DebugWindow(tk.Toplevel):
+    """可滚动的调试图像展示窗口。"""
+
+    def __init__(self, parent, entries, title="调试"):
+        super().__init__(parent)
+        self.title(title)
+        self.geometry("760x800")
+        self.configure(bg="#1E1E1E")
+
+        info = tk.Label(self, text=f"共 {len(entries)} 步", bg="#1E1E1E", fg="#999",
+                        font=("Microsoft YaHei UI", 10))
+        info.pack(pady=(8, 4))
+
+        canvas = tk.Canvas(self, bg="#1E1E1E", highlightthickness=0)
+        scrollbar = tk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        scroll_frame = tk.Frame(canvas, bg="#1E1E1E")
+
+        scroll_frame.bind("<Configure>",
+                          lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=8)
+        scrollbar.pack(side="right", fill="y", pady=8)
+
+        self._photos = []  # 防止 GC 回收
+        for label, img in entries:
+            lbl = tk.Label(scroll_frame, text=label, bg="#1E1E1E", fg="#CCC",
+                           font=("Microsoft YaHei UI", 11, "bold"))
+            lbl.pack(pady=(12, 2))
+            photo = ImageTk.PhotoImage(img)
+            self._photos.append(photo)
+            img_lbl = tk.Label(scroll_frame, image=photo, bg="#1E1E1E")
+            img_lbl.pack(pady=(0, 6))
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        self.protocol("WM_DELETE_WINDOW", lambda: self.destroy())
 
 
 def main():

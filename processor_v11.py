@@ -203,6 +203,183 @@ class ImageProcessorV11:
 
         return bbox_a, bbox_b
 
+    def _joint_detect_debug(self, img_a, img_b):
+        """联合检测 + 收集每一步的调试图像。
+
+        Returns: (bbox_a, bbox_b, debug_entries)
+          debug_entries: list of (label: str, image: Image.Image)
+        """
+        debug = []
+
+        bbox_a = self._single_pipe_bbox(img_a)
+        bbox_b = self._single_pipe_bbox(img_b)
+
+        # 1. Mask 可视化
+        mask_a = self._get_mask_arr(img_a)
+        mask_b = self._get_mask_arr(img_b)
+        debug.append(("Mask A", self._debug_mask_overlay(img_a, mask_a)))
+        debug.append(("Mask B", self._debug_mask_overlay(img_b, mask_b)))
+
+        # 2. AI bbox（裁剪前）
+        if bbox_a:
+            debug.append(("AI BBox A (裁剪前)", self._debug_bbox_overlay(img_a, bbox_a, color=(255, 165, 0))))
+        if bbox_b:
+            debug.append(("AI BBox B (裁剪前)", self._debug_bbox_overlay(img_b, bbox_b, color=(255, 165, 0))))
+
+        # 3. 宽度分布 + 共识图
+        ys_a, lefts_a, rights_a = self._vertical_profile(mask_a)
+        ys_b, lefts_b, rights_b = self._vertical_profile(mask_b)
+
+        if len(ys_a) >= 20 and len(ys_b) >= 20:
+            wa = rights_a - lefts_a
+            wb = rights_b - lefts_b
+            y_min = max(ys_a.min(), ys_b.min())
+            y_max = min(ys_a.max(), ys_b.max())
+
+            if y_max > y_min:
+                uh = y_max - y_min
+                uy = np.linspace(y_min, y_max, uh)
+                wi_a = np.interp(uy, ys_a, wa.astype(float))
+                wi_b = np.interp(uy, ys_b, wb.astype(float))
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    ratio = np.maximum(wi_a, wi_b) / np.maximum(np.minimum(wi_a, wi_b), 1)
+                consensus = ratio < CONSENSUS_RATIO_THRESHOLD
+                cy_min, cy_max = self._largest_consensus_interval(uy, consensus)
+
+                debug.append(("宽度分布 & 共识区间",
+                              self._debug_profile_chart(uy, wi_a, wi_b, ratio, consensus, cy_min, cy_max)))
+
+                if cy_max - cy_min >= 50:
+                    j_bbox_a = self._bbox_in_range(mask_a, cy_min, cy_max)
+                    j_bbox_b = self._bbox_in_range(mask_b, cy_min, cy_max)
+                    if j_bbox_a:
+                        bbox_a = j_bbox_a
+                    if j_bbox_b:
+                        bbox_b = j_bbox_b
+
+        # 4. 杆子裁剪前后对比
+        if bbox_a:
+            rod_bbox_a = self._trim_rod_bottom(img_a, mask_a, list(bbox_a))
+            if rod_bbox_a != tuple(bbox_a):
+                debug.append(("Rod 裁剪 A (黄=前 绿=后)", self._debug_rod_compare(img_a, bbox_a, rod_bbox_a)))
+            bbox_a = rod_bbox_a
+        if bbox_b:
+            rod_bbox_b = self._trim_rod_bottom(img_b, mask_b, list(bbox_b))
+            if rod_bbox_b != tuple(bbox_b):
+                debug.append(("Rod 裁剪 B (黄=前 绿=后)", self._debug_rod_compare(img_b, bbox_b, rod_bbox_b)))
+            bbox_b = rod_bbox_b
+
+        # 5. 最终 bbox
+        if bbox_a:
+            debug.append(("结果 A", self._debug_bbox_overlay(img_a, bbox_a, color=(0, 255, 0))))
+        if bbox_b:
+            debug.append(("结果 B", self._debug_bbox_overlay(img_b, bbox_b, color=(0, 255, 0))))
+
+        return bbox_a, bbox_b, debug
+
+
+    # -- 调试可视化辅助方法 ----------------------------------------------
+
+    @staticmethod
+    def _debug_mask_overlay(img, mask_arr):
+        """原图上叠加半透明绿色 mask。"""
+        overlay = img.copy().convert("RGBA")
+        green = np.array([0, 180, 0, 90], dtype=np.uint8)
+        mask_bool = mask_arr > 30
+        arr = np.array(overlay)
+        arr[mask_bool] = ((arr[mask_bool].astype(np.uint16) * 0.5 +
+                           green.astype(np.uint16) * 0.5).clip(0, 255).astype(np.uint8))
+        return Image.fromarray(arr).convert("RGB")
+
+    @staticmethod
+    def _debug_bbox_overlay(img, bbox, color=(0, 255, 0)):
+        """原图上画 bbox 矩形框，返回 400px 宽缩略图。"""
+        from PIL import ImageDraw
+        out = img.copy()
+        draw = ImageDraw.Draw(out)
+        x1, y1, x2, y2 = [int(v) for v in bbox]
+        draw.rectangle([x1, y1, x2, y2], outline=color, width=max(2, (x2 - x1) // 150))
+        w, h = out.size
+        out = out.resize((400, int(400 * h / w)), Image.LANCZOS)
+        return out
+
+    @staticmethod
+    def _debug_rod_compare(img, before_bbox, after_bbox):
+        """杆子裁剪前后比较：黄框=前，绿框=后。"""
+        from PIL import ImageDraw
+        out = img.copy()
+        draw = ImageDraw.Draw(out)
+        bx1, by1, bx2, by2 = [int(v) for v in before_bbox]
+        ax1, ay1, ax2, ay2 = [int(v) for v in after_bbox]
+        w = max(2, (bx2 - bx1) // 150)
+        draw.rectangle([bx1, by1, bx2, by2], outline=(255, 180, 0), width=w)
+        draw.rectangle([ax1, ay1, ax2, ay2], outline=(0, 255, 0), width=w)
+        w_i, h_i = out.size
+        out = out.resize((400, int(400 * h_i / w_i)), Image.LANCZOS)
+        return out
+
+    @staticmethod
+    def _debug_profile_chart(uy, wi_a, wi_b, ratio, consensus, cy_min, cy_max):
+        """绘制宽度分布 + 共识区间图表（PIL 纯绘图，不依赖 matplotlib）。"""
+        from PIL import ImageDraw
+        w_img, h_img = 700, 400
+        pad_t, pad_b, pad_l, pad_r = 40, 30, 60, 30
+        pw = w_img - pad_l - pad_r
+        ph = h_img - pad_t - pad_b
+
+        img = Image.new("RGB", (w_img, h_img), (30, 30, 30))
+        draw = ImageDraw.Draw(img)
+
+        n = len(uy)
+        y2px = lambda v: pad_t + int(ph * (v - uy[0]) / (uy[-1] - uy[0] + 1))
+        val2px = lambda v, vmin, vmax: pad_l + int(pw * (v - vmin) / max(vmax - vmin, 1))
+
+        w_max = max(wi_a.max(), wi_b.max())
+        r_max = max(ratio.max(), CONSENSUS_RATIO_THRESHOLD + 0.5)
+        r_min = 1.0
+
+        # 共识区域绿色背景
+        for i in range(n - 1):
+            if consensus[i]:
+                y0, y1 = y2px(uy[i]), y2px(uy[i + 1])
+                draw.rectangle([pad_l, y0, pad_l + pw, y1], fill=(40, 70, 40))
+
+        # 共识区间绿框
+        if cy_max > cy_min:
+            yc0, yc1 = y2px(cy_min), y2px(cy_max)
+            draw.rectangle([pad_l, yc0, pad_l + pw, yc1], outline=(0, 200, 0), width=3)
+
+        # 宽度曲线 A（蓝）、B（红）
+        step = max(1, n // 500)
+        pts_a = [(val2px(wi_a[i], 0, w_max), y2px(uy[i])) for i in range(0, n, step)]
+        pts_b = [(val2px(wi_b[i], 0, w_max), y2px(uy[i])) for i in range(0, n, step)]
+        for pts, color in [(pts_a, (0, 150, 255)), (pts_b, (255, 100, 100))]:
+            for j in range(len(pts) - 1):
+                draw.line([pts[j][0], pts[j][1], pts[j + 1][0], pts[j + 1][1]], fill=color, width=2)
+
+        # 比率曲线（黄色虚线）
+        r_pts = [(val2px(ratio[i], r_min, r_max), y2px(uy[i])) for i in range(0, n, step)]
+        for j in range(0, len(r_pts) - 1, 2):
+            draw.line([r_pts[j][0], r_pts[j][1], r_pts[j + 1][0], r_pts[j + 1][1]],
+                      fill=(255, 255, 100), width=1)
+
+        # 阈值线
+        thr_x = val2px(CONSENSUS_RATIO_THRESHOLD, r_min, r_max)
+        draw.line([thr_x, pad_t, thr_x, pad_t + ph], fill=(255, 255, 100), width=1, dash=(5, 5))
+
+        # 图例
+        from PIL import ImageFont
+        try:
+            font = ImageFont.truetype("consola.ttf", 12)
+        except Exception:
+            font = ImageFont.load_default()
+        draw.text((5, pad_t + 5), "W", fill=(0, 150, 255), font=font)
+        draw.text((5, pad_t + 20), "B", fill=(255, 100, 100), font=font)
+        draw.text((5, pad_t + 35), "R", fill=(255, 255, 100), font=font)
+        draw.text((w_img - 55, pad_t + 5), f"thr={CONSENSUS_RATIO_THRESHOLD}", fill=(255, 255, 100), font=font)
+
+        return img
+
     def _trim_rod_bottom(self, img, mask_arr, bbox):
         """基于 mask 宽度占比裁剪杆子/人台底部。
 
