@@ -2,16 +2,10 @@
 流程：选文件夹 → AI+CV 流式处理（完成一对立即可审）
 左预览 + 右编辑 + 角度旋钮
 """
-import sys, os, shutil
-# PyInstaller onefile: 把捆绑的模型复制到 ~/.u2net/（rembg 默认路径）
-# 避免 pooch 在临时解压目录里因权限/编码问题校验失败
+import sys, os, shutil, threading
+# PyInstaller onefile: 模型数据文件在 sys._MEIPASS 临时解压目录
 _EXE_DIR = sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(__file__)
 _BUNDLED_MODEL = os.path.join(_EXE_DIR, 'models', 'u2net.onnx')
-if os.path.exists(_BUNDLED_MODEL):
-    _U2NET_USER = os.path.join(os.path.expanduser('~'), '.u2net', 'u2net.onnx')
-    if not os.path.exists(_U2NET_USER):
-        os.makedirs(os.path.dirname(_U2NET_USER), exist_ok=True)
-        shutil.copy2(_BUNDLED_MODEL, _U2NET_USER)
 
 import json
 import math
@@ -377,9 +371,32 @@ class ReviewerApp(ctk.CTk):
         self.update_idletasks()
         if self._preview_placeholder:
             self._draw_preview_placeholder()
-        self._status_loader.configure(text="模型加载中...")
-        self.processor.prewarm()
-        self.after(200, self._check_prewarm)
+
+        # 首次运行：把捆绑的 u2net.onnx 复制到 ~/.u2net/（rembg 默认路径）
+        if os.path.exists(_BUNDLED_MODEL):
+            _dst = os.path.join(os.path.expanduser('~'), '.u2net', 'u2net.onnx')
+            if not os.path.exists(_dst):
+                self._status_loader.configure(text="释放模型中...")
+                def _copy_model():
+                    try:
+                        os.makedirs(os.path.dirname(_dst), exist_ok=True)
+                        shutil.copy2(_BUNDLED_MODEL, _dst)
+                    except Exception:
+                        pass
+                    self.after(0, lambda: (
+                        self._status_loader.configure(text="模型加载中..."),
+                        self.processor.prewarm(),
+                        self.after(200, self._check_prewarm)
+                    ))
+                threading.Thread(target=_copy_model, daemon=True).start()
+            else:
+                self._status_loader.configure(text="模型加载中...")
+                self.processor.prewarm()
+                self.after(200, self._check_prewarm)
+        else:
+            self._status_loader.configure(text="模型加载中...")
+            self.processor.prewarm()
+            self.after(200, self._check_prewarm)
 
     def _check_prewarm(self):
         try:
