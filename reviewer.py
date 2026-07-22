@@ -306,6 +306,7 @@ class ReviewerApp(ctk.CTk):
         self.ai_bbox_b = None
         self.annotations: dict[str, dict] = {}
         self.input_dir: Optional[Path] = None
+        self._preview_zoom = 1.0
 
         # 流式处理
         self._proc_done = 0
@@ -367,6 +368,8 @@ class ReviewerApp(ctk.CTk):
         ctk.CTkLabel(left, text="拼接预览", font=ctk.CTkFont(weight="bold")).pack(pady=(6, 2))
         self.preview_canvas = tk.Canvas(left, bg="#1E1E1E", highlightthickness=0)
         self.preview_canvas.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self.preview_canvas.bind("<MouseWheel>", self._on_preview_wheel)
+        self.preview_canvas.bind("<Enter>", lambda e: self.preview_canvas.focus_set())
         main.bind("<Configure>", lambda e: left.configure(width=max(200, e.height - 8)))
 
         # 右：编辑（左右并排，占据剩余水平空间）
@@ -641,7 +644,7 @@ class ReviewerApp(ctk.CTk):
         c = self.preview_canvas
         cw_canvas = max(c.winfo_width(), 100); ch_canvas = max(c.winfo_height(), 100)
         display_size = min(cw_canvas, ch_canvas)
-        ds = max(display_size, 100)
+        ds = max(int(display_size * self._preview_zoom), 100)
         if th != ds:
             preview = preview.resize((ds, ds), Image.LANCZOS)
 
@@ -658,6 +661,13 @@ class ReviewerApp(ctk.CTk):
         for frac in [0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875]:
             lx = px + int(ds * frac)
             c.create_line(lx, py, lx, py + ds, fill=gray, width=1, dash=ds_sub, stipple="gray50")
+
+    def _on_preview_wheel(self, event):
+        """鼠标滚轮缩放拼接预览。"""
+        z = self._preview_zoom
+        z *= 1.1 if event.delta > 0 else 1 / 1.1
+        self._preview_zoom = max(1.0, min(5.0, z))
+        self._update_preview()
 
     def _on_bbox_changed(self):
         self.bbox_a = list(self.editor_a.bbox); self.bbox_b = list(self.editor_b.bbox)
