@@ -445,14 +445,15 @@ class ReviewerApp(ctk.CTk):
                        command=self._export_single).pack(side="left", padx=2)
         ctk.CTkButton(bar, text="全部导出", width=70, command=self._export_all).pack(side="left", padx=2)
 
-        # Logo（右侧，点击显示关于）
+        # Logo / 关于（右侧）
         if self._logo_img:
             self._lbl_logo = tk.Label(bar, image=self._logo_img, bg="#2B2B2B",
                                       cursor="hand2")
-            self._lbl_logo.pack(side="right", padx=(4, 2))
-            self._lbl_logo.bind("<Button-1>", self._show_about)
         else:
-            self._lbl_logo = None
+            self._lbl_logo = tk.Label(bar, text="关于", fg="#999", bg="#2B2B2B",
+                                      font=ctk.CTkFont(size=10), cursor="hand2")
+        self._lbl_logo.pack(side="right", padx=(4, 2))
+        self._lbl_logo.bind("<Button-1>", self._show_about)
 
         self.lbl_fname = ctk.CTkLabel(bar, text="", font=ctk.CTkFont(size=9), text_color="#999")
         self.lbl_fname.pack(side="right", padx=8)
@@ -1018,7 +1019,10 @@ class ReviewerApp(ctk.CTk):
         logo_about_png = Path(__file__).parent / "logo_about.png"
         if logo_about_png.exists():
             logo = ImageTk.PhotoImage(Image.open(str(logo_about_png)))
-        AboutWindow(self, logo)
+        w = AboutWindow(self, logo)
+        w.attributes('-topmost', True)
+        w.grab_set()
+        self.wait_window(w)
 
 
 class AboutWindow(tk.Toplevel):
