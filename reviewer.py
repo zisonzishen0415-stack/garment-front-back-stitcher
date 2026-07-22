@@ -360,9 +360,9 @@ class ReviewerApp(ctk.CTk):
             BBoxEditor.set_placeholder(Image.open(str(logo_placeholder_png)).convert("RGBA"))
 
         self._build_ui()
-        self._status_loader.configure(text="⏳ AI模型加载中…")
+        self._status_loader.configure(text="模型加载中...")
         self.processor.prewarm(on_done=lambda: (
-            self._status_loader.configure(text="✅ 就绪"),
+            self._status_loader.configure(text="模型就绪"),
             self.after(3000, lambda: self._status_loader.configure(text=""))
         ))
 
