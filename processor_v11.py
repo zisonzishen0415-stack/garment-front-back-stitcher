@@ -85,9 +85,12 @@ class ImageProcessorV11:
 
     # -- rembg 单管道 ----------------------------------------------------
 
-    def _single_pipe_bbox(self, img: Image.Image) -> Optional[tuple[int, int, int, int]]:
-        """单管道：原始图 → rembg → bbox（v11: 只用对比度增强，效果最好）"""
-        # v11 用对比度增强做 rembg，对暗色衣物/人台分离效果较好
+    def _single_pipe(self, img: Image.Image) -> tuple[Optional[tuple[int, int, int, int]], np.ndarray]:
+        """单管道：对比度增强 → rembg → (bbox, mask)。
+
+        v11 用对比度增强做 rembg，对暗色衣物/人台分离效果较好。
+        一次 rembg 推理同时产出 bbox 和 mask，避免重复调用。
+        """
         enhanced = ImageEnhance.Contrast(img).enhance(1.4)
         from rembg import remove
         mask = remove(enhanced, session=self._get_session(), only_mask=True)
@@ -100,21 +103,20 @@ class ImageProcessorV11:
         mask_arr = np.array(mask)
         rows, cols = np.where(mask_arr > 30)
         if len(rows) < 100:
-            return None
-        return (int(cols.min()), int(rows.min()),
+            return None, mask_arr
+        bbox = (int(cols.min()), int(rows.min()),
                 int(cols.max()), int(rows.max()))
+        return bbox, mask_arr
+
+    def _single_pipe_bbox(self, img: Image.Image):
+        """向后兼容：只返回 bbox。新代码请用 _single_pipe。"""
+        bbox, _ = self._single_pipe(img)
+        return bbox
 
     def _get_mask_arr(self, img: Image.Image) -> np.ndarray:
-        """获取原始图的mask（不增强，用于轮廓分析）"""
-        from rembg import remove
-        mask = remove(img, session=self._get_session(), only_mask=True)
-        w, h = img.size
-        if mask.size != (w, h):
-            if mask.size == (h, w):
-                mask = mask.transpose(Image.Transpose.TRANSPOSE)
-            else:
-                mask = mask.resize((w, h), Image.LANCZOS)
-        return np.array(mask)
+        """向后兼容：只返回 mask。新代码请用 _single_pipe。"""
+        _, mask = self._single_pipe(img)
+        return mask
 
     # -- 联合轮廓分析 ----------------------------------------------------
 
@@ -157,16 +159,13 @@ class ImageProcessorV11:
                 min(mask_arr.shape[1], int(c.max())), yi + int(r.max()))
 
     def _joint_detect(self, img_a, img_b):
-        """v11: 单管道 rembg bbox + 简单共识匹配 + 杆子底部裁剪。
+        """v11: 单管道 rembg bbox + 联合轮廓共识匹配 + 杆子底部裁剪。
 
+        每张图只跑一次 rembg（_single_pipe 同时返回 bbox + mask），
         共识区间直接作为最终 bbox，不做 trim-only 约束。
         """
-        bbox_a = self._single_pipe_bbox(img_a)
-        bbox_b = self._single_pipe_bbox(img_b)
-
-        # 获取原始 mask 跑轮廓分析
-        mask_a = self._get_mask_arr(img_a)
-        mask_b = self._get_mask_arr(img_b)
+        bbox_a, mask_a = self._single_pipe(img_a)
+        bbox_b, mask_b = self._single_pipe(img_b)
 
         ys_a, lefts_a, rights_a = self._vertical_profile(mask_a)
         ys_b, lefts_b, rights_b = self._vertical_profile(mask_b)
@@ -202,6 +201,213 @@ class ImageProcessorV11:
             bbox_b = self._trim_rod_bottom(img_b, mask_b, bbox_b)
 
         return bbox_a, bbox_b
+
+    def _joint_detect_debug(self, img_a, img_b):
+        """联合检测 + 收集每一步的调试图像。
+
+        Returns: (bbox_a, bbox_b, debug_entries)
+          debug_entries: list of (label: str, image: Image.Image)
+        """
+        debug = []
+
+        bbox_a, mask_a = self._single_pipe(img_a)
+        bbox_b, mask_b = self._single_pipe(img_b)
+
+        # 1. AI 分割：rembg (u2net) → Mask
+        debug.append(("① AI分割(rembg) A", self._debug_mask_overlay(img_a, mask_a)))
+        debug.append(("① AI分割(rembg) B", self._debug_mask_overlay(img_b, mask_b)))
+
+        # 2. Mask → BBox
+        if bbox_a:
+            debug.append(("② 初步BBox A", self._debug_bbox_overlay(img_a, bbox_a, color=(255, 165, 0))))
+        if bbox_b:
+            debug.append(("② 初步BBox B", self._debug_bbox_overlay(img_b, bbox_b, color=(255, 165, 0))))
+
+        # 3. CV 联合轮廓分析：宽度分布 + 共识区间
+        ys_a, lefts_a, rights_a = self._vertical_profile(mask_a)
+        ys_b, lefts_b, rights_b = self._vertical_profile(mask_b)
+
+        if len(ys_a) >= 20 and len(ys_b) >= 20:
+            wa = rights_a - lefts_a
+            wb = rights_b - lefts_b
+            y_min = max(ys_a.min(), ys_b.min())
+            y_max = min(ys_a.max(), ys_b.max())
+
+            if y_max > y_min:
+                uh = y_max - y_min
+                uy = np.linspace(y_min, y_max, uh)
+                wi_a = np.interp(uy, ys_a, wa.astype(float))
+                wi_b = np.interp(uy, ys_b, wb.astype(float))
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    ratio = np.maximum(wi_a, wi_b) / np.maximum(np.minimum(wi_a, wi_b), 1)
+                consensus = ratio < CONSENSUS_RATIO_THRESHOLD
+                cy_min, cy_max = self._largest_consensus_interval(uy, consensus)
+
+                debug.append(("③ CV宽度分布&共识区间",
+                              self._debug_profile_chart(uy, wi_a, wi_b, ratio, consensus, cy_min, cy_max)))
+
+                if cy_max - cy_min >= 50:
+                    j_bbox_a = self._bbox_in_range(mask_a, cy_min, cy_max)
+                    j_bbox_b = self._bbox_in_range(mask_b, cy_min, cy_max)
+                    # 快照 consensus 提炼前 → 后对比
+                    if j_bbox_a:
+                        debug.append(("④ CV共识提炼(橙=前绿=后) A",
+                                      self._debug_rod_compare(img_a, bbox_a, j_bbox_a)))
+                        bbox_a = j_bbox_a
+                    if j_bbox_b:
+                        debug.append(("④ CV共识提炼(橙=前绿=后) B",
+                                      self._debug_rod_compare(img_b, bbox_b, j_bbox_b)))
+                        bbox_b = j_bbox_b
+
+        # 5. 杆子裁剪前后对比
+        if bbox_a:
+            rod_bbox_a = self._trim_rod_bottom(img_a, mask_a, bbox_a)
+            if rod_bbox_a != bbox_a:
+                debug.append(("⑤ CV杆子裁剪(橙=前绿=后) A", self._debug_rod_compare(img_a, bbox_a, rod_bbox_a)))
+            bbox_a = rod_bbox_a
+        if bbox_b:
+            rod_bbox_b = self._trim_rod_bottom(img_b, mask_b, bbox_b)
+            if rod_bbox_b != bbox_b:
+                debug.append(("⑤ CV杆子裁剪(橙=前绿=后) B", self._debug_rod_compare(img_b, bbox_b, rod_bbox_b)))
+            bbox_b = rod_bbox_b
+
+        # 6. 最终 bbox
+        if bbox_a:
+            debug.append(("⑥ 最终结果 A", self._debug_bbox_overlay(img_a, bbox_a, color=(0, 255, 0))))
+        if bbox_b:
+            debug.append(("⑥ 最终结果 B", self._debug_bbox_overlay(img_b, bbox_b, color=(0, 255, 0))))
+
+        return bbox_a, bbox_b, debug
+
+
+    # -- 调试可视化辅助方法 ----------------------------------------------
+
+    @staticmethod
+    def _debug_mask_overlay(img, mask_arr):
+        """原图上叠加半透明绿色 mask。"""
+        overlay = img.copy().convert("RGBA")
+        green = np.array([0, 180, 0, 90], dtype=np.uint8)
+        mask_bool = mask_arr > 30
+        arr = np.array(overlay)
+        arr[mask_bool] = ((arr[mask_bool].astype(np.uint16) * 0.5 +
+                           green.astype(np.uint16) * 0.5).clip(0, 255).astype(np.uint8))
+        out = Image.fromarray(arr).convert("RGB")
+        w, h = out.size
+        out = out.resize((500, int(500 * h / w)), Image.LANCZOS)
+        return out
+
+    @staticmethod
+    def _debug_bbox_overlay(img, bbox, color=(0, 255, 0)):
+        """原图上画 bbox 矩形框，返回 400px 宽缩略图。"""
+        from PIL import ImageDraw
+        out = img.copy()
+        draw = ImageDraw.Draw(out)
+        x1, y1, x2, y2 = [int(v) for v in bbox]
+        draw.rectangle([x1, y1, x2, y2], outline=color, width=max(2, (x2 - x1) // 150))
+        w, h = out.size
+        out = out.resize((500, int(500 * h / w)), Image.LANCZOS)
+        return out
+
+    @staticmethod
+    def _debug_rod_compare(img, before_bbox, after_bbox):
+        """杆子裁剪前后比较：黄框=前，绿框=后。"""
+        from PIL import ImageDraw
+        out = img.copy()
+        draw = ImageDraw.Draw(out)
+        bx1, by1, bx2, by2 = [int(v) for v in before_bbox]
+        ax1, ay1, ax2, ay2 = [int(v) for v in after_bbox]
+        w = max(2, (bx2 - bx1) // 150)
+        draw.rectangle([bx1, by1, bx2, by2], outline=(255, 180, 0), width=w)
+        draw.rectangle([ax1, ay1, ax2, ay2], outline=(0, 255, 0), width=w)
+        w_i, h_i = out.size
+        out = out.resize((500, int(500 * h_i / w_i)), Image.LANCZOS)
+        return out
+
+    @staticmethod
+    def _debug_profile_chart(uy, wi_a, wi_b, ratio, consensus, cy_min, cy_max):
+        """绘制宽度分布 + 共识区间图表（PIL 纯绘图，不依赖 matplotlib）。"""
+        from PIL import ImageDraw, ImageFont
+        w_img, h_img = 900, 520
+        pad_t, pad_b, pad_l, pad_r = 50, 30, 80, 20
+        pw = w_img - pad_l - pad_r
+        ph = h_img - pad_t - pad_b
+
+        img = Image.new("RGB", (w_img, h_img), (28, 28, 30))
+        draw = ImageDraw.Draw(img)
+
+        try:
+            font_s = ImageFont.truetype("msyh.ttc", 11)   # 微软雅黑
+        except Exception:
+            try:
+                font_s = ImageFont.truetype("simhei.ttf", 11)
+            except Exception:
+                font_s = ImageFont.load_default()
+
+        n = len(uy)
+        y2px = lambda v: pad_t + int(ph * (v - uy[0]) / (uy[-1] - uy[0] + 1))
+        val2px = lambda v, vmin, vmax: pad_l + int(pw * (v - vmin) / max(vmax - vmin, 1))
+
+        w_max = max(wi_a.max(), wi_b.max())
+        r_max = max(ratio.max(), CONSENSUS_RATIO_THRESHOLD + 0.5)
+        r_min = 1.0
+
+        # 共识区域绿色背景
+        for i in range(n - 1):
+            if consensus[i]:
+                y0, y1 = y2px(uy[i]), y2px(uy[i + 1])
+                draw.rectangle([pad_l, y0, pad_l + pw, y1], fill=(35, 65, 35))
+
+        # 共识区间边界绿框
+        if cy_max > cy_min:
+            yc0, yc1 = y2px(cy_min), y2px(cy_max)
+            draw.rectangle([pad_l, yc0, pad_l + pw, yc1], outline=(0, 220, 0), width=3)
+
+        # 宽度曲线：正面（蓝）、反面（红）
+        step = max(1, n // 600)
+        pts_a = [(val2px(wi_a[i], 0, w_max), y2px(uy[i])) for i in range(0, n, step)]
+        pts_b = [(val2px(wi_b[i], 0, w_max), y2px(uy[i])) for i in range(0, n, step)]
+        for pts, color, w in [(pts_a, (60, 140, 255), 2), (pts_b, (255, 90, 90), 2)]:
+            for j in range(len(pts) - 1):
+                draw.line([pts[j][0], pts[j][1], pts[j + 1][0], pts[j + 1][1]],
+                          fill=color, width=w)
+
+        # 比率曲线（黄色）
+        r_pts = [(val2px(ratio[i], r_min, r_max), y2px(uy[i])) for i in range(0, n, step)]
+        for j in range(0, len(r_pts) - 1, 2):
+            draw.line([r_pts[j][0], r_pts[j][1], r_pts[j + 1][0], r_pts[j + 1][1]],
+                      fill=(255, 230, 80), width=1)
+
+        # 阈值线（黄色虚线）
+        thr_x = val2px(CONSENSUS_RATIO_THRESHOLD, r_min, r_max)
+        for yy in range(pad_t, pad_t + ph, 12):
+            draw.line([thr_x, yy, thr_x, min(yy + 6, pad_t + ph)],
+                      fill=(255, 230, 80), width=1)
+
+        # axis: Y 轴刻度标记
+        y_top = pad_t; y_bot = pad_t + ph
+        for frac in [0, 0.25, 0.5, 0.75, 1.0]:
+            yy = y_top + int(ph * frac)
+            draw.line([pad_l - 4, yy, pad_l, yy], fill=(150, 150, 150))
+
+        # ── 图例 ──
+        lx, ly = pad_l + 8, 8
+        # 蓝色块 + "正面宽度"
+        draw.rectangle([lx, ly, lx + 14, ly + 10], fill=(60, 140, 255))
+        draw.text((lx + 18, ly - 1), "正面服装宽度(px)", fill=(180, 180, 180), font=font_s)
+        # 红色块
+        draw.rectangle([lx + 160, ly, lx + 174, ly + 10], fill=(255, 90, 90))
+        draw.text((lx + 178, ly - 1), "反面服装宽度(px)", fill=(180, 180, 180), font=font_s)
+        # 黄色块
+        draw.rectangle([lx + 340, ly, lx + 354, ly + 10], fill=(255, 230, 80))
+        draw.text((lx + 358, ly - 1), "宽度比 max/min", fill=(180, 180, 180), font=font_s)
+        # 阈值
+        draw.text((lx + 490, ly - 1),
+                  f"共识阈值={CONSENSUS_RATIO_THRESHOLD}", fill=(255, 230, 80), font=font_s)
+        # 绿色 = 共识区间
+        draw.rectangle([lx, ly + 14, lx + 14, ly + 24], fill=(35, 65, 35))
+        draw.text((lx + 18, ly + 13), "共识区间 (宽度比<1.35)", fill=(180, 180, 180), font=font_s)
+
+        return img
 
     def _trim_rod_bottom(self, img, mask_arr, bbox):
         """基于 mask 宽度占比裁剪杆子/人台底部。

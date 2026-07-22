@@ -12,6 +12,7 @@ from PIL import Image, ImageOps, ImageTk
 import customtkinter as ctk
 
 from processor_v11 import ImageProcessorV11 as ImageProcessor
+from liquify import LiquifyTool
 
 MARGIN = 0.12
 HANDLE_SIZE = 5
@@ -44,6 +45,7 @@ class BBoxEditor(tk.Canvas):
         self._drag_box = None
         self._pan_data = None
         self._on_change = on_change
+        self._last_fit_w = 0
 
         self.bind("<ButtonPress-1>", self._on_down)
         self.bind("<B1-Motion>", self._on_move)
@@ -53,25 +55,39 @@ class BBoxEditor(tk.Canvas):
         self.bind("<B2-Motion>", self._on_pan_move)
         self.bind("<ButtonPress-3>", self._on_pan_down)
         self.bind("<B3-Motion>", self._on_pan_move)
+        self.bind("<Configure>", self._on_configure)
 
     def set_image(self, pil_img, bbox, ai_bbox=None, angle=0.0):
         self.pil_img = pil_img
         self.bbox = list(bbox)
         self.angle = float(angle)
         self.ai_bbox = list(ai_bbox) if ai_bbox else None
+        # _on_configure 或 _fit 决定何时布局；set_image 先跑一次
+        self._last_fit_w = 0  # 追踪上次 fit 的画布尺寸，避免重复重绘
         self._fit()
 
     def _fit(self):
         if not self.pil_img: return
-        self.update_idletasks()
-        cw = max(self.winfo_width(), 50)
-        ch = max(self.winfo_height(), 50)
+        cw = self.winfo_width()
+        ch = self.winfo_height()
+        if cw < 30 or ch < 30:
+            return
+        if abs(cw - self._last_fit_w) < 4 and abs(ch - getattr(self, '_last_fit_h', 0)) < 4:
+            return
+        self._last_fit_w = cw
+        self._last_fit_h = ch
         iw, ih = self.pil_img.size
-        s = min(cw / iw, ch / ih, 0.5) * 0.85
+        if ih > iw:
+            s = ch / ih  # 竖向图：撑满高度，上下触边
+        else:
+            s = min(cw / iw, ch / ih) * 0.85
         self.scale = max(0.02, s)
         self.ox = (cw - iw * self.scale) / 2
         self.oy = (ch - ih * self.scale) / 2
         self._redraw()
+
+    def _on_configure(self, event):
+        self._fit()
 
     def _to_canvas(self, ix, iy):
         return (ix * self.scale + self.ox, iy * self.scale + self.oy)
@@ -290,6 +306,7 @@ class ReviewerApp(ctk.CTk):
         self.ai_bbox_b = None
         self.annotations: dict[str, dict] = {}
         self.input_dir: Optional[Path] = None
+        self._preview_zoom = 1.0
 
         # 流式处理
         self._proc_done = 0
@@ -297,6 +314,7 @@ class ReviewerApp(ctk.CTk):
         self._results: list = []
         self._first_loaded = False
 
+        self.btn_debug = None
         self._build_ui()
 
     # ── UI ────────────────────────────────────────────────────
@@ -310,6 +328,9 @@ class ReviewerApp(ctk.CTk):
         self.entry_dir.pack(side="left", padx=4)
         ctk.CTkButton(bar, text="浏览", width=50, command=self._pick_dir).pack(side="left", padx=2)
         ctk.CTkButton(bar, text="AI 处理", width=70, command=self._start_process).pack(side="left", padx=(10, 2))
+        self.btn_debug = ctk.CTkButton(bar, text="调试", width=50,
+                                        command=self._start_debug, state="disabled")
+        self.btn_debug.pack(side="left", padx=2)
 
         ctk.CTkFrame(bar, width=1, height=24, fg_color="#555").pack(side="left", padx=10)
 
@@ -324,7 +345,8 @@ class ReviewerApp(ctk.CTk):
 
         ctk.CTkButton(bar, text="⇄ 互换", width=60, command=self._swap_fb).pack(side="left", padx=2)
         ctk.CTkButton(bar, text="重置AI", width=60, command=self._reset_ai).pack(side="left", padx=2)
-        ctk.CTkButton(bar, text="适应", width=50, command=self._fit_editors).pack(side="left", padx=2)
+        ctk.CTkButton(bar, text="液化", width=50, fg_color="#6B3FA0", hover_color="#56338A",
+                       command=self._liquify).pack(side="left", padx=2)
 
         ctk.CTkFrame(bar, width=1, height=24, fg_color="#555").pack(side="left", padx=10)
 
@@ -339,41 +361,50 @@ class ReviewerApp(ctk.CTk):
         main = ctk.CTkFrame(self)
         main.pack(fill="both", expand=True, padx=8, pady=(4, 8))
 
-        # 左：预览
-        left = ctk.CTkFrame(main)
-        left.pack(side="left", fill="both", expand=True, padx=(4, 2), pady=4)
+        # 左：预览面板 — 强制 1:1 正方形（宽 = main 可用高度）
+        left = ctk.CTkFrame(main, width=500, height=500)
+        left.pack(side="left", fill="y", padx=(4, 2), pady=4)
+        left.pack_propagate(False)
         ctk.CTkLabel(left, text="拼接预览", font=ctk.CTkFont(weight="bold")).pack(pady=(6, 2))
         self.preview_canvas = tk.Canvas(left, bg="#1E1E1E", highlightthickness=0)
         self.preview_canvas.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        self.preview_canvas.bind("<MouseWheel>", self._on_preview_wheel)
+        self.preview_canvas.bind("<Enter>", lambda e: self.preview_canvas.focus_set())
+        main.bind("<Configure>", lambda e: left.configure(width=max(200, e.height - 8)))
 
-        # 右：编辑
-        right = ctk.CTkFrame(main, width=700)
-        right.pack(side="right", fill="both", padx=(2, 4), pady=4)
-        right.pack_propagate(False)
+        # 右：编辑（左右并排，占据剩余水平空间）
+        right = ctk.CTkFrame(main)
+        right.pack(side="left", fill="both", expand=True, padx=(2, 4), pady=4)
 
-        # 正面上方：标签 + 角度控制
-        row_a = ctk.CTkFrame(right)
-        row_a.pack(fill="x", padx=8, pady=(8, 2))
+        # -- 正面（左） --
+        frame_a = ctk.CTkFrame(right)
+        frame_a.pack(side="left", fill="both", expand=True, padx=(2, 2), pady=4)
+
+        row_a = ctk.CTkFrame(frame_a)
+        row_a.pack(fill="x", padx=4, pady=(4, 2))
         ctk.CTkLabel(row_a, text="正面", font=ctk.CTkFont(weight="bold")).pack(side="left")
-        ctk.CTkButton(row_a, text="◀", width=24, command=lambda: self._adj_angle('a', -0.5)).pack(side="right", padx=1)
-        self.lbl_angle_a = ctk.CTkLabel(row_a, text="0.0°", width=45, font=ctk.CTkFont(size=12))
-        self.lbl_angle_a.pack(side="right", padx=4)
-        ctk.CTkButton(row_a, text="▶", width=24, command=lambda: self._adj_angle('a', +0.5)).pack(side="right", padx=1)
+        ctk.CTkButton(row_a, text="↻顺", width=30, command=lambda: self._adj_angle('a', -0.5)).pack(side="right", padx=1)
+        self.lbl_angle_a = ctk.CTkLabel(row_a, text="0.0°", width=40, font=ctk.CTkFont(size=11))
+        self.lbl_angle_a.pack(side="right", padx=2)
+        ctk.CTkButton(row_a, text="↺逆", width=30, command=lambda: self._adj_angle('a', +0.5)).pack(side="right", padx=1)
 
-        self.editor_a = BBoxEditor(right, on_change=self._on_bbox_changed, height=320)
-        self.editor_a.pack(fill="x", padx=8, pady=(2, 6))
+        self.editor_a = BBoxEditor(frame_a, on_change=self._on_bbox_changed)
+        self.editor_a.pack(fill="both", expand=True, padx=4, pady=(2, 4))
 
-        # 反面上方：标签 + 角度控制
-        row_b = ctk.CTkFrame(right)
-        row_b.pack(fill="x", padx=8, pady=(6, 2))
+        # -- 反面（右） --
+        frame_b = ctk.CTkFrame(right)
+        frame_b.pack(side="left", fill="both", expand=True, padx=(2, 2), pady=4)
+
+        row_b = ctk.CTkFrame(frame_b)
+        row_b.pack(fill="x", padx=4, pady=(4, 2))
         ctk.CTkLabel(row_b, text="反面", font=ctk.CTkFont(weight="bold")).pack(side="left")
-        ctk.CTkButton(row_b, text="◀", width=24, command=lambda: self._adj_angle('b', -0.5)).pack(side="right", padx=1)
-        self.lbl_angle_b = ctk.CTkLabel(row_b, text="0.0°", width=45, font=ctk.CTkFont(size=12))
-        self.lbl_angle_b.pack(side="right", padx=4)
-        ctk.CTkButton(row_b, text="▶", width=24, command=lambda: self._adj_angle('b', +0.5)).pack(side="right", padx=1)
+        ctk.CTkButton(row_b, text="↻顺", width=30, command=lambda: self._adj_angle('b', -0.5)).pack(side="right", padx=1)
+        self.lbl_angle_b = ctk.CTkLabel(row_b, text="0.0°", width=40, font=ctk.CTkFont(size=11))
+        self.lbl_angle_b.pack(side="right", padx=2)
+        ctk.CTkButton(row_b, text="↺逆", width=30, command=lambda: self._adj_angle('b', +0.5)).pack(side="right", padx=1)
 
-        self.editor_b = BBoxEditor(right, on_change=self._on_bbox_changed, height=320)
-        self.editor_b.pack(fill="x", padx=8, pady=(2, 6))
+        self.editor_b = BBoxEditor(frame_b, on_change=self._on_bbox_changed)
+        self.editor_b.pack(fill="both", expand=True, padx=4, pady=(2, 4))
 
         # 状态栏
         self.status = ctk.CTkLabel(self, text="就绪 — 选择文件夹并点击「AI 处理」", anchor="w")
@@ -383,6 +414,7 @@ class ReviewerApp(ctk.CTk):
         self.bind("<Right>", lambda e: self._next_pair())
         self.bind("<Left>", lambda e: self._prev_pair())
         self.bind("<e>", lambda e: self._export_single()); self.bind("<E>", lambda e: self._export_single())
+        self.bind("<s>", lambda e: self._export_single()); self.bind("<S>", lambda e: self._export_single())
         self.bind("<f>", lambda e: self._fit_editors()); self.bind("<F>", lambda e: self._fit_editors())
         self.bind("<x>", lambda e: self._swap_fb()); self.bind("<X>", lambda e: self._swap_fb())
         self.bind("<r>", lambda e: self._reset_rotation()); self.bind("<R>", lambda e: self._reset_rotation())
@@ -442,6 +474,7 @@ class ReviewerApp(ctk.CTk):
             self.status.configure(text="未找到可配对的图片")
             return
 
+        self.btn_debug.configure(state="normal")
         ann_path = self.input_dir / "annotations.json"
         if ann_path.exists():
             data = json.loads(ann_path.read_text("utf-8"))
@@ -520,6 +553,8 @@ class ReviewerApp(ctk.CTk):
         if not self.pairs or self.pair_idx >= self._proc_done:
             return
 
+        self.winfo_toplevel().update()  # 强制全窗口布局完成
+
         pa, pb = self.pairs[self.pair_idx]
         self.lbl_idx.configure(text=f"{self.pair_idx + 1} / {self._proc_total}")
         self.lbl_fname.configure(text=f"{pa.stem}  +  {pb.stem}")
@@ -556,7 +591,6 @@ class ReviewerApp(ctk.CTk):
         self.lbl_angle_a.configure(text=f"{self.angle_a:+.1f}°")
         self.lbl_angle_b.configure(text=f"{self.angle_b:+.1f}°")
         self._update_preview()
-        self.after(100, self._fit_editors)
 
     # ── 预览 ──────────────────────────────────────────────────
 
@@ -575,12 +609,10 @@ class ReviewerApp(ctk.CTk):
             img = img.rotate(angle, Image.BICUBIC, center=(cx, cy),
                              expand=False, fillcolor=(255, 255, 255))
         w, h = img.size; x1, y1, x2, y2 = bbox
-        bcy = (y1 + y2) / 2; bw = x2 - x1
+        bcy = (y1 + y2) / 2; bcx = (x1 + x2) / 2
         crop_h = crop_w * 2
-        if anchor == "right":
-            right = min(w, int(x2 + bw * MARGIN)); cx = right - crop_w
-        else:
-            left = max(0, int(x1 - bw * MARGIN)); cx = left
+        # bbox 居中于裁切窗口，正反面左右余量对称
+        cx = int(bcx - crop_w / 2)
         if cx < 0: cx = 0
         if cx + crop_w > w: cx = w - crop_w
         cy = int(bcy - crop_h / 2)
@@ -609,9 +641,9 @@ class ReviewerApp(ctk.CTk):
 
         c = self.preview_canvas
         cw_canvas = max(c.winfo_width(), 100); ch_canvas = max(c.winfo_height(), 100)
-        display_size = min(cw_canvas, ch_canvas) - 20
-        ds = min(th, display_size)
-        if th > display_size:
+        display_size = min(cw_canvas, ch_canvas)
+        ds = max(int(display_size * self._preview_zoom), 100)
+        if th != ds:
             preview = preview.resize((ds, ds), Image.LANCZOS)
 
         self._preview_img = ImageTk.PhotoImage(preview)
@@ -628,6 +660,13 @@ class ReviewerApp(ctk.CTk):
             lx = px + int(ds * frac)
             c.create_line(lx, py, lx, py + ds, fill=gray, width=1, dash=ds_sub, stipple="gray50")
 
+    def _on_preview_wheel(self, event):
+        """鼠标滚轮缩放拼接预览。"""
+        z = self._preview_zoom
+        z *= 1.1 if event.delta > 0 else 1 / 1.1
+        self._preview_zoom = max(1.0, min(5.0, z))
+        self._update_preview()
+
     def _on_bbox_changed(self):
         self.bbox_a = list(self.editor_a.bbox); self.bbox_b = list(self.editor_b.bbox)
         self._update_preview()
@@ -638,6 +677,38 @@ class ReviewerApp(ctk.CTk):
     def _auto_save_debounce(self):
         if hasattr(self, '_auto_save_id'): self.after_cancel(self._auto_save_id)
         self._auto_save_id = self.after(800, self._auto_save)
+
+    def _liquify(self):
+        """对当前拼接结果打开液化工具"""
+        if not self.img_a or not self.img_b: return
+        # 生成当前拼接预览（全分辨率）
+        unified_cw = max(self._natural_w(self.bbox_a), self._natural_w(self.bbox_b))
+        crop_a = self._simple_crop(self.img_a, self.bbox_a, "right", unified_cw, self.angle_a)
+        crop_b = self._simple_crop(self.img_b, self.bbox_b, "left", unified_cw, self.angle_b)
+        if crop_a.width != crop_b.width:
+            tw = max(crop_a.width, crop_b.width); th = tw * 2
+            for crp, is_a in [(crop_a, True), (crop_b, False)]:
+                if crp.width != tw:
+                    tmp = Image.new("RGB", (tw, th), (255, 255, 255))
+                    tmp.paste(crp, ((tw - crp.width)//2, (th - crp.height)//2))
+                    if is_a: crop_a = tmp
+                    else:    crop_b = tmp
+        th = min(crop_a.height, crop_b.height); th += th % 2; hw = th // 2
+        stitched = Image.new("RGB", (th, th), (255, 255, 255))
+        stitched.paste(crop_a.resize((hw, th), Image.LANCZOS), (0, 0))
+        stitched.paste(crop_b.resize((hw, th), Image.LANCZOS), (hw, 0))
+
+        pa = self.pairs[self.pair_idx][0]
+        tool = LiquifyTool(stitched, f"液化 — {pa.stem}.png",
+                           on_apply=lambda result: self._on_liquify_done(result, pa))
+        self.wait_window(tool)
+
+    def _on_liquify_done(self, result, pa):
+        if result:
+            out_dir = self.input_dir / "审核输出" if self.input_dir else Path("审核输出")
+            out_dir.mkdir(parents=True, exist_ok=True)
+            result.save(out_dir / f"{pa.stem}.png", "PNG")
+            self.status.configure(text=f"液化已保存 {pa.stem}.png")
 
     def _fit_editors(self):
         self.editor_a.update_display(); self.editor_b.update_display()
@@ -742,6 +813,92 @@ class ReviewerApp(ctk.CTk):
             except Exception:
                 pass
         self.status.configure(text=f"全部导出完成: {ok}/{self._proc_done} → {out_dir}")
+
+    def _start_debug(self):
+        """对当前第一对运行调试检测并弹出可视化窗口。"""
+        if not self.pairs or self._proc_done < 1:
+            return
+        pa, pb = self.pairs[0]
+        try:
+            ia = ImageOps.exif_transpose(Image.open(pa)).convert("RGB")
+            ib = ImageOps.exif_transpose(Image.open(pb)).convert("RGB")
+            _, _, debug_entries = self.processor._joint_detect_debug(ia, ib)
+            DebugWindow(self, debug_entries, f"调试 — {pa.stem} + {pb.stem}")
+        except Exception as e:
+            self.status.configure(text=f"调试失败: {e}")
+
+
+class DebugWindow(tk.Toplevel):
+    """Scrollable debug image viewer - each step shows A/B side by side."""
+
+    def __init__(self, parent, entries, title="debug"):
+        super().__init__(parent)
+        self.title(title)
+        self.geometry("1050x800")
+        self.configure(bg="#1E1E1E")
+
+        # Group entries by step name (without trailing " A"/" B" suffix)
+        steps = {}   # step_name -> {"img_a": Image, "img_b": Image}
+        order = []   # insertion order
+        for label, img in entries:
+            if label.endswith(" A") or label.endswith(" B"):
+                name = label[:-2]
+                side = label[-1]  # "A" or "B"
+            else:
+                name = label
+                side = None
+            if name not in steps:
+                steps[name] = {}
+                order.append(name)
+            if side == "B":
+                steps[name]["img_b"] = img
+            else:
+                steps[name]["img_a"] = img
+
+        info = tk.Label(self, text=f"共 {len(order)} 步", bg="#1E1E1E", fg="#999",
+                        font=("Microsoft YaHei UI", 10))
+        info.pack(pady=(8, 4))
+
+        canvas = tk.Canvas(self, bg="#1E1E1E", highlightthickness=0)
+        scrollbar = tk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        scroll_frame = tk.Frame(canvas, bg="#1E1E1E")
+        scroll_frame.bind("<Configure>",
+                          lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=8)
+        scrollbar.pack(side="right", fill="y", pady=8)
+
+        self._photos = []
+        PAIR_W = 460   # 每张 A/B 配对图宽度
+        FULL_W = 900   # 单张全宽图（图表等）
+
+        for name in order:
+            data = steps[name]
+            lbl = tk.Label(scroll_frame, text=name, bg="#1E1E1E", fg="#CCC",
+                           font=("Microsoft YaHei UI", 11, "bold"))
+            lbl.pack(pady=(12, 2))
+
+            img_a = data.get("img_a")
+            img_b = data.get("img_b")
+            pair_frame = tk.Frame(scroll_frame, bg="#1E1E1E")
+            pair_frame.pack(pady=(0, 6))
+
+            for img in [img_a, img_b]:
+                if img is None:
+                    continue
+                w, h = img.size
+                max_w = PAIR_W if img_b is not None else FULL_W
+                if w > max_w:
+                    img = img.resize((max_w, int(h * max_w / w)), Image.LANCZOS)
+                photo = ImageTk.PhotoImage(img)
+                self._photos.append(photo)
+                side = "left" if img is img_a else "left"  # pack both side=left for flow
+                tk.Label(pair_frame, image=photo, bg="#1E1E1E").pack(side="left", padx=3)
+
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        self.bind("<MouseWheel>", _on_mousewheel)
 
 
 def main():
