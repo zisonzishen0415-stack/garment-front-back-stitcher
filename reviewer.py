@@ -345,20 +345,18 @@ class ReviewerApp(ctk.CTk):
         main = ctk.CTkFrame(self)
         main.pack(fill="both", expand=True, padx=8, pady=(4, 8))
 
-        # 左：1:1 预览（grid weight=3，右权重=2，60/40 分配）
-        main.grid_columnconfigure(0, weight=3)
-        main.grid_columnconfigure(1, weight=2)
-        main.grid_rowconfigure(0, weight=1)
-
-        left = ctk.CTkFrame(main)
-        left.grid(row=0, column=0, sticky="nsew", padx=(4, 2), pady=4)
+        # 左：预览面板 — 强制 1:1 正方形（宽 = main 可用高度）
+        left = ctk.CTkFrame(main, width=500, height=500)
+        left.pack(side="left", fill="y", padx=(4, 2), pady=4)
+        left.pack_propagate(False)
         ctk.CTkLabel(left, text="拼接预览", font=ctk.CTkFont(weight="bold")).pack(pady=(6, 2))
         self.preview_canvas = tk.Canvas(left, bg="#1E1E1E", highlightthickness=0)
         self.preview_canvas.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+        main.bind("<Configure>", lambda e: left.configure(width=max(200, e.height - 8)))
 
-        # 右：编辑（左右并排）
+        # 右：编辑（左右并排，占据剩余水平空间）
         right = ctk.CTkFrame(main)
-        right.grid(row=0, column=1, sticky="nsew", padx=(2, 4), pady=4)
+        right.pack(side="left", fill="both", expand=True, padx=(2, 4), pady=4)
 
         # -- 正面（左） --
         frame_a = ctk.CTkFrame(right)
