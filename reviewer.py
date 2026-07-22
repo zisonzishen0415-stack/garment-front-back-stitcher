@@ -497,12 +497,12 @@ class ReviewerApp(ctk.CTk):
             self.pair_idx = 0
             self._load_current_pair()
             self.lbl_idx.configure(text=f"1 / {self._proc_total}")
+            if self.btn_debug:
+                self.btn_debug.configure(state="normal")
         self._update_nav_buttons()
 
     def _on_all_done(self):
         self._proc_done = self._proc_total
-        if self.btn_debug:
-            self.btn_debug.configure(state="normal")
         self.status.configure(text=f"全部完成 — {self._proc_total} 对已就绪")
         self._update_nav_buttons()
 
