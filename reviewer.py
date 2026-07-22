@@ -64,10 +64,12 @@ class BBoxEditor(tk.Canvas):
 
     def _fit(self):
         if not self.pil_img: return
-        self.winfo_toplevel().update_idletasks()
-        # 用父容器高度（更可靠），画布填满父容器
-        cw = max(self.winfo_width(), self.master.winfo_width(), 50)
-        ch = max(self.master.winfo_height(), 50) - 8
+        self.master.update_idletasks()
+        self.update_idletasks()
+        cw = max(self.winfo_width(), 50)
+        ch = max(self.winfo_height(), 50)
+        if ch < 100 and self.master.winfo_height() > 100:
+            ch = self.master.winfo_height() - 40  # 减工具栏行高
         iw, ih = self.pil_img.size
         s = ch / ih * 0.90
         self.scale = max(0.02, s)
