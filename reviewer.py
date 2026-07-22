@@ -65,10 +65,10 @@ class BBoxEditor(tk.Canvas):
     def _fit(self):
         if not self.pil_img: return
         self.winfo_toplevel().update_idletasks()
-        cw = max(self.winfo_width(), 50)
-        ch = max(self.winfo_height(), 50)
+        # 用父容器高度（更可靠），画布填满父容器
+        cw = max(self.winfo_width(), self.master.winfo_width(), 50)
+        ch = max(self.master.winfo_height(), 50) - 8
         iw, ih = self.pil_img.size
-        # 竖向素材图：撑满高度、居中
         s = ch / ih * 0.90
         self.scale = max(0.02, s)
         self.ox = (cw - iw * self.scale) / 2
