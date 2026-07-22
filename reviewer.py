@@ -554,6 +554,11 @@ class ReviewerApp(ctk.CTk):
                 self.status.configure(text="已选文件夹，点击「AI 处理」开始")
 
     def _start_process(self, auto_load=False):
+        # Prevent re-entry while worker is running
+        if getattr(self, '_processing', False):
+            self.status.configure(text="AI 正在处理中，请稍候...")
+            return
+
         d = self.entry_dir.get().strip()
         if not d or not Path(d).is_dir():
             self.status.configure(text="请先选择有效的文件夹")
@@ -615,17 +620,23 @@ class ReviewerApp(ctk.CTk):
         self.status.configure(text=f"AI+CV 处理中... 0/{self._proc_total}")
         self._status_loader.configure(text="")
 
+        self._processing = True
+        n = self._proc_total
+
         def worker():
-            for i, (pa, pb) in enumerate(self.pairs):
-                try:
-                    img_a = ImageOps.exif_transpose(Image.open(pa)).convert("RGB")
-                    img_b = ImageOps.exif_transpose(Image.open(pb)).convert("RGB")
-                    bb_a, bb_b = self.processor._joint_detect(img_a, img_b)
-                    self._results[i] = (bb_a, bb_b)
-                except Exception:
-                    self._results[i] = (None, None)
-                self.after(0, lambda idx=i: self._on_one_done(idx))
-            self.after(0, self._on_all_done)
+            try:
+                for i, (pa, pb) in enumerate(self.pairs):
+                    try:
+                        img_a = ImageOps.exif_transpose(Image.open(pa)).convert("RGB")
+                        img_b = ImageOps.exif_transpose(Image.open(pb)).convert("RGB")
+                        bb_a, bb_b = self.processor._joint_detect(img_a, img_b)
+                        self._results[i] = (bb_a, bb_b)
+                    except Exception:
+                        self._results[i] = (None, None)
+                    self.after(0, lambda idx=i: self._on_one_done(idx))
+                self.after(0, self._on_all_done)
+            finally:
+                self._processing = False
         threading.Thread(target=worker, daemon=True).start()
 
     def _on_one_done(self, idx):
