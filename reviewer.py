@@ -73,11 +73,15 @@ class BBoxEditor(tk.Canvas):
         if cw < 30 or ch < 30:
             return
         if abs(cw - self._last_fit_w) < 4 and abs(ch - getattr(self, '_last_fit_h', 0)) < 4:
-            return  # 尺寸未变，跳过
+            return
         self._last_fit_w = cw
         self._last_fit_h = ch
         iw, ih = self.pil_img.size
-        s = ch / ih * 0.90
+        # 竖向素材：优先撑满高度，宽度可能溢出但不影响 bbox 居中
+        if ih > iw:
+            s = ch / ih * 0.90
+        else:
+            s = min(cw / iw, ch / ih) * 0.85
         self.scale = max(0.02, s)
         self.ox = (cw - iw * self.scale) / 2
         self.oy = (ch - ih * self.scale) / 2
@@ -547,7 +551,7 @@ class ReviewerApp(ctk.CTk):
         if not self.pairs or self.pair_idx >= self._proc_done:
             return
 
-        self.update_idletasks()  # 强制布局完成，确保编辑器画布有真实尺寸
+        self.winfo_toplevel().update()  # 强制全窗口布局完成
 
         pa, pb = self.pairs[self.pair_idx]
         self.lbl_idx.configure(text=f"{self.pair_idx + 1} / {self._proc_total}")
@@ -585,8 +589,6 @@ class ReviewerApp(ctk.CTk):
         self.lbl_angle_a.configure(text=f"{self.angle_a:+.1f}°")
         self.lbl_angle_b.configure(text=f"{self.angle_b:+.1f}°")
         self._update_preview()
-        self.after(150, self._fit_editors)
-        self.after(500, self._fit_editors)  # 保险：布局可能延迟
 
     # ── 预览 ──────────────────────────────────────────────────
 
