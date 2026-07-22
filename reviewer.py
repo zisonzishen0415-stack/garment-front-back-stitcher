@@ -531,11 +531,28 @@ class ReviewerApp(ctk.CTk):
             return
 
         self.btn_debug.configure(state="normal")
+
+        # 加载已有标注
         ann_path = self.input_dir / "annotations.json"
         if ann_path.exists():
             data = json.loads(ann_path.read_text("utf-8"))
             for a in data.get("annotations", []):
                 self.annotations[a["file"]] = a
+
+        # 如果标注覆盖了所有配对，跳过 AI，直接加载
+        paired_names = {p[0].name for p in self.pairs} | {p[1].name for p in self.pairs}
+        if paired_names <= set(self.annotations.keys()):
+            self._proc_total = len(self.pairs)
+            self._proc_done = self._proc_total
+            self._results = [None] * self._proc_total
+            self.pair_idx = 0
+            self._first_loaded = True
+            self._load_current_pair()
+            self.lbl_idx.configure(text=f"1 / {self._proc_total}")
+            self.btn_prev.configure(state="disabled")
+            self.btn_next.configure(state="normal" if self._proc_done > 1 else "disabled")
+            self.status.configure(text=f"已加载 {self._proc_total} 对标注，无需重新处理")
+            return
 
         self._proc_total = len(self.pairs)
         self._proc_done = 0
