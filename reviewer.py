@@ -4,7 +4,8 @@
 """
 import sys, os
 # PyInstaller 打包时，优先用捆绑的 u2net.onnx 模型
-_EXE_DIR = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(__file__)
+# PyInstaller onefile 会把文件解压到 sys._MEIPASS，模型在那里
+_EXE_DIR = sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(__file__)
 _BUNDLED_MODEL = os.path.join(_EXE_DIR, 'models', 'u2net.onnx')
 if os.path.exists(_BUNDLED_MODEL):
     os.environ['U2NET_HOME'] = os.path.join(_EXE_DIR, 'models')
