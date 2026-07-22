@@ -333,9 +333,15 @@ class LiquifyCanvas(tk.Canvas):
                                      self.brush_radius, self.pressure)
             self._prev_ix, self._prev_iy = ix, iy
             self._schedule_render()
-            # 笔刷圆（canvas 坐标）
-            br = int(self.brush_radius * self.scale)
-            self.create_oval(event.x - br, event.y - br, event.x + br, event.y + br,
+            # 笔刷变形预览（canvas 坐标，三层）
+            r = int(self.brush_radius * self.scale)
+            r1 = max(2, int(r * 0.3))
+            self.create_oval(event.x - r1, event.y - r1, event.x + r1, event.y + r1,
+                             fill="#FFFFFF", outline="", stipple="gray50", tags="brush")
+            r2 = max(r1 + 2, int(r * 0.7))
+            self.create_oval(event.x - r2, event.y - r2, event.x + r2, event.y + r2,
+                             outline="#00BFFF", width=1, tags="brush")
+            self.create_oval(event.x - r, event.y - r, event.x + r, event.y + r,
                              outline="#00BFFF", width=1, dash=(3, 5), tags="brush")
 
     def _on_up(self, event):
@@ -343,13 +349,24 @@ class LiquifyCanvas(tk.Canvas):
         self._render()
 
     def _on_motion(self, event):
-        """鼠标移动时显示笔刷圆圈（跟随光标）"""
+        """鼠标移动时显示三层同心笔刷光标"""
         self.delete("cursor")
         if self._mode in ('pan', 'zoom'):
             return
-        br = int(self.brush_radius * self.scale)
-        if br < 3: return
-        self.create_oval(event.x - br, event.y - br, event.x + br, event.y + br,
+        r = int(self.brush_radius * self.scale)
+        if r < 3:
+            return
+        cx, cy = event.x, event.y
+        # 内圈: 核心压力区，半透明白色填充
+        r1 = max(2, int(r * 0.3))
+        self.create_oval(cx - r1, cy - r1, cx + r1, cy + r1,
+                         fill="#FFFFFF", outline="", stipple="gray50", tags="cursor")
+        # 中圈: 有效变形区，实线
+        r2 = max(r1 + 2, int(r * 0.7))
+        self.create_oval(cx - r2, cy - r2, cx + r2, cy + r2,
+                         outline="#00BFFF", width=1, tags="cursor")
+        # 外圈: 衰减边界，虚线
+        self.create_oval(cx - r, cy - r, cx + r, cy + r,
                          outline="#00BFFF", width=1, dash=(4, 6), tags="cursor")
 
     def _on_leave(self, event):
