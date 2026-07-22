@@ -36,7 +36,7 @@ python reviewer.py
 
 ## GUI 布局
 
-> 截图待补充：将 `screenshot.png` 放到项目根目录即可。
+![软件界面](ae52337fff929acaee5a323e88ef5563.png)
 
 ---
 
