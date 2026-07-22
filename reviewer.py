@@ -345,17 +345,14 @@ class ReviewerApp(ctk.CTk):
         main = ctk.CTkFrame(self)
         main.pack(fill="both", expand=True, padx=8, pady=(4, 8))
 
-        # 左：1:1 正方形预览（填满可用高度）
-        self._left_panel = ctk.CTkFrame(main, fg_color="transparent")
-        self._left_panel.pack(side="left", fill="y", padx=(4, 2), pady=4)
-        self._left_panel.pack_propagate(False)
-        self._left_panel.bind("<Configure>", self._on_left_configure)
-        ctk.CTkLabel(self._left_panel, text="拼接预览",
-                     font=ctk.CTkFont(weight="bold")).pack(pady=(6, 2))
-        self.preview_canvas = tk.Canvas(self._left_panel, bg="#1E1E1E", highlightthickness=0)
+        # 左：1:1 预览（拼接结果本身是正方形，canvas 填满可用空间）
+        left = ctk.CTkFrame(main)
+        left.pack(side="left", fill="both", expand=True, padx=(4, 2), pady=4)
+        ctk.CTkLabel(left, text="拼接预览", font=ctk.CTkFont(weight="bold")).pack(pady=(6, 2))
+        self.preview_canvas = tk.Canvas(left, bg="#1E1E1E", highlightthickness=0)
         self.preview_canvas.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
-        # 右：编辑（左右并排，占据剩余水平空间）
+        # 右：编辑（左右并排）
         right = ctk.CTkFrame(main)
         right.pack(side="left", fill="both", expand=True, padx=(2, 4), pady=4)
 
@@ -604,12 +601,6 @@ class ReviewerApp(ctk.CTk):
         if cy < 0: cy = 0
         if cy + crop_h > h: cy = h - crop_h
         return img.crop((cx, cy, cx + crop_w, cy + crop_h))
-
-    def _on_left_configure(self, event):
-        """保持左面板 1:1 正方形（宽度 = 可用高度）。"""
-        h = event.height
-        if h > 100:
-            event.widget.configure(width=h)
 
     def _update_preview(self):
         if not self.img_a or not self.img_b: return
