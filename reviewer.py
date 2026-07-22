@@ -2,6 +2,13 @@
 流程：选文件夹 → AI+CV 流式处理（完成一对立即可审）
 左预览 + 右编辑 + 角度旋钮
 """
+import sys, os
+# PyInstaller 打包时，优先用捆绑的 u2net.onnx 模型
+_EXE_DIR = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else os.path.dirname(__file__)
+_BUNDLED_MODEL = os.path.join(_EXE_DIR, 'models', 'u2net.onnx')
+if os.path.exists(_BUNDLED_MODEL):
+    os.environ['U2NET_HOME'] = os.path.join(_EXE_DIR, 'models')
+
 import json
 import math
 import threading
@@ -315,6 +322,20 @@ class ReviewerApp(ctk.CTk):
         self._first_loaded = False
 
         self.btn_debug = None
+
+        # Logo（窗口图标 + 标题栏）
+        LOGO_DIR = Path(__file__).parent
+        ico = LOGO_DIR / "logo.ico"
+        if ico.exists():
+            try:
+                self.iconbitmap(str(ico))
+            except Exception:
+                pass
+        self._logo_img = None
+        logo_png = LOGO_DIR / "logo_toolbar.png"
+        if logo_png.exists():
+            self._logo_img = ImageTk.PhotoImage(Image.open(str(logo_png)))
+
         self._build_ui()
 
     # ── UI ────────────────────────────────────────────────────
@@ -353,6 +374,15 @@ class ReviewerApp(ctk.CTk):
         ctk.CTkButton(bar, text="导出当前", width=70, fg_color="#2B8C3C", hover_color="#236E30",
                        command=self._export_single).pack(side="left", padx=2)
         ctk.CTkButton(bar, text="全部导出", width=70, command=self._export_all).pack(side="left", padx=2)
+
+        # Logo（右侧，点击显示关于）
+        if self._logo_img:
+            self._lbl_logo = tk.Label(bar, image=self._logo_img, bg=ctk.ThemeManager.theme["CTkFrame"]["fg_color"][1],
+                                      cursor="hand2")
+            self._lbl_logo.pack(side="right", padx=(4, 2))
+            self._lbl_logo.bind("<Button-1>", self._show_about)
+        else:
+            self._lbl_logo = None
 
         self.lbl_fname = ctk.CTkLabel(bar, text="", font=ctk.CTkFont(size=9), text_color="#999")
         self.lbl_fname.pack(side="right", padx=8)
@@ -826,6 +856,40 @@ class ReviewerApp(ctk.CTk):
             DebugWindow(self, debug_entries, f"调试 — {pa.stem} + {pb.stem}")
         except Exception as e:
             self.status.configure(text=f"调试失败: {e}")
+
+    def _show_about(self, event=None):
+        """弹出关于窗口。"""
+        logo = None
+        logo_about_png = Path(__file__).parent / "logo_about.png"
+        if logo_about_png.exists():
+            logo = ImageTk.PhotoImage(Image.open(str(logo_about_png)))
+        AboutWindow(self, logo)
+
+
+class AboutWindow(tk.Toplevel):
+    """关于对话框。"""
+
+    def __init__(self, parent, logo):
+        super().__init__(parent)
+        self.title("关于")
+        self.geometry("780x300")
+        self.configure(bg="#1E1E1E")
+        self.resizable(False, False)
+
+        if logo:
+            lbl = tk.Label(self, image=logo, bg="#1E1E1E")
+            lbl.image = logo  # 防止 GC
+            lbl.pack(pady=(30, 12))
+
+        info = tk.Label(self,
+                        text="Garment Front-Back Stitcher\n"
+                             "服装样品正反面 AI+CV 拼接工具\n\n"
+                             "技术栈： rembg · customtkinter · Pillow · NumPy/SciPy\n\n"
+                             "完全离线运行，无需网络",
+                        bg="#1E1E1E", fg="#CCC",
+                        font=("Microsoft YaHei UI", 11),
+                        justify="center")
+        info.pack(pady=(8, 20))
 
 
 class DebugWindow(tk.Toplevel):
