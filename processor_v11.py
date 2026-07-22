@@ -34,6 +34,11 @@ class ImageProcessorV11:
             self._session = new_session()
         return self._session
 
+    def prewarm(self):
+        """后台加载 u2net 模型（168MB），消除第一对的等待时间。"""
+        import threading
+        threading.Thread(target=self._get_session, daemon=True).start()
+
     # -- 公共入口 --------------------------------------------------------
 
     def find_pairs(self, input_dir: Path) -> list[tuple[Path, Path]]:

@@ -360,6 +360,7 @@ class ReviewerApp(ctk.CTk):
             BBoxEditor.set_placeholder(Image.open(str(logo_placeholder_png)).convert("RGBA"))
 
         self._build_ui()
+        self.after(500, self.processor.prewarm)  # 启动后后台加载 AI 模型
 
     # ── UI ────────────────────────────────────────────────────
 
