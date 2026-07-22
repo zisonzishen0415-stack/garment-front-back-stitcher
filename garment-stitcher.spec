@@ -36,7 +36,7 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        'matplotlib', 'tkinter.ttk',
+        'matplotlib',
         'torch', 'tensorflow', 'keras',
         'sympy', 'pandas', 'pytest',
     ],
