@@ -68,7 +68,8 @@ class BBoxEditor(tk.Canvas):
         cw = max(self.winfo_width(), 50)
         ch = max(self.winfo_height(), 50)
         iw, ih = self.pil_img.size
-        s = min(cw / iw, ch / ih) * 0.85
+        # 竖向素材图：撑满高度、居中
+        s = ch / ih * 0.90
         self.scale = max(0.02, s)
         self.ox = (cw - iw * self.scale) / 2
         self.oy = (ch - ih * self.scale) / 2

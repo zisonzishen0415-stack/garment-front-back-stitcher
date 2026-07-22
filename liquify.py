@@ -239,8 +239,8 @@ class LiquifyCanvas(tk.Canvas):
         self.engine = engine
         self.scale = 0.35
         self.ox = 0; self.oy = 0           # 图像左上角在 canvas 上的偏移
-        self.brush_radius = 40
-        self.pressure = 0.3
+        self.brush_radius = 60
+        self.pressure = 0.55
         self.show_mesh = False
 
         self._photo: Optional[ImageTk.PhotoImage] = None
@@ -453,8 +453,8 @@ class LiquifyTool(tk.Toplevel):
         self._bs = tk.Scale(bar, from_=5, to=300, orient=tk.HORIZONTAL, length=150,
                             bg="#555", fg="white", highlightbackground="#555",
                             command=lambda v: self._on_brush(float(v)))
-        self._bs.set(40); self._bs.pack(side=tk.LEFT, padx=2)
-        self._bl = tk.Label(bar, text="40px", bg="#3C3C3C", fg="#CCC",
+        self._bs.set(60); self._bs.pack(side=tk.LEFT, padx=2)
+        self._bl = tk.Label(bar, text="60px", bg="#3C3C3C", fg="#CCC",
                             font=("Consolas", 9), width=6); self._bl.pack(side=tk.LEFT)
         tk.Frame(bar, width=1, height=28, bg="#666").pack(side=tk.LEFT, padx=6, pady=4)
 
@@ -462,8 +462,8 @@ class LiquifyTool(tk.Toplevel):
         self._ps = tk.Scale(bar, from_=5, to=200, orient=tk.HORIZONTAL, length=120,
                             bg="#555", fg="white", highlightbackground="#555",
                             command=lambda v: self._on_press(float(v) / 100))
-        self._ps.set(30); self._ps.pack(side=tk.LEFT, padx=2)
-        self._pl = tk.Label(bar, text="0.30", bg="#3C3C3C", fg="#CCC",
+        self._ps.set(55); self._ps.pack(side=tk.LEFT, padx=2)
+        self._pl = tk.Label(bar, text="0.55", bg="#3C3C3C", fg="#CCC",
                             font=("Consolas", 9), width=5); self._pl.pack(side=tk.LEFT)
         tk.Frame(bar, width=1, height=28, bg="#666").pack(side=tk.LEFT, padx=6, pady=4)
 
