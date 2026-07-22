@@ -313,7 +313,7 @@ class ReviewerApp(ctk.CTk):
         ctk.CTkButton(bar, text="浏览", width=50, command=self._pick_dir).pack(side="left", padx=2)
         ctk.CTkButton(bar, text="AI 处理", width=70, command=self._start_process).pack(side="left", padx=(10, 2))
         self.btn_debug = ctk.CTkButton(bar, text="调试", width=50, fg_color="#555",
-                                        command=self._start_debug, state="disabled")
+                                        command=self._start_debug)
         self.btn_debug.pack(side="left", padx=2)
 
         ctk.CTkFrame(bar, width=1, height=24, fg_color="#555").pack(side="left", padx=10)
@@ -497,8 +497,6 @@ class ReviewerApp(ctk.CTk):
             self.pair_idx = 0
             self._load_current_pair()
             self.lbl_idx.configure(text=f"1 / {self._proc_total}")
-            if self.btn_debug:
-                self.btn_debug.configure(state="normal")
         self._update_nav_buttons()
 
     def _on_all_done(self):
