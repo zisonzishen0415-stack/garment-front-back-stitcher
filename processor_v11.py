@@ -365,7 +365,10 @@ class ImageProcessorV11:
 
         # 阈值线
         thr_x = val2px(CONSENSUS_RATIO_THRESHOLD, r_min, r_max)
-        draw.line([thr_x, pad_t, thr_x, pad_t + ph], fill=(255, 255, 100), width=1, dash=(5, 5))
+        # 阈值线（手绘虚线：每 6px 画 6px 段，兼容低版本 Pillow）
+        for yy in range(pad_t, pad_t + ph, 12):
+            draw.line([thr_x, yy, thr_x, min(yy + 6, pad_t + ph)],
+                      fill=(255, 255, 100), width=1)
 
         # 图例
         from PIL import ImageFont
