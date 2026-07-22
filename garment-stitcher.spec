@@ -18,8 +18,6 @@ _datas = [
     ('logo_placeholder.png', '.'),
 ]
 _u2net = PROJECT / 'models' / 'u2net.onnx'
-if _u2net.exists():
-    _datas.append((str(_u2net), 'models'))
 
 a = Analysis(
     ['reviewer.py'],
@@ -50,7 +48,6 @@ exe = EXE(
     a.scripts,
     a.binaries,
     a.zipfiles,
-    a.datas,
     [],
     name='GarmentStitcher',
     debug=False,
