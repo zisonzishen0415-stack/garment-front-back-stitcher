@@ -35,6 +35,13 @@ env/
 *.swp
 *.swo
 
+# 模型文件（从 ~/.u2net 复制，不纳入版本控制）
+models/
+
+# PyInstaller 构建产物
+dist/
+build/
+
 # 系统文件
 .DS_Store
 Thumbs.db
