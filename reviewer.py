@@ -1031,49 +1031,50 @@ class AboutWindow(tk.Toplevel):
     def __init__(self, parent, logo):
         super().__init__(parent)
         self.title("关于")
-        self.geometry("780x350")
+        self.geometry("780x480")
         self.configure(bg="#1E1E1E")
         self.resizable(False, False)
+        self.transient(parent)
 
         if logo:
             lbl = tk.Label(self, image=logo, bg="#1E1E1E")
             lbl.image = logo
-            lbl.pack(pady=(30, 12))
+            lbl.pack(pady=(30, 8))
 
         info = tk.Label(self,
-                        text="Garment Front-Back Stitcher\n"
-                             "服装样品正反面 AI+CV 拼接工具\n\n"
-                             "技术栈： rembg · customtkinter · Pillow · NumPy/SciPy\n\n"
-                             "完全离线运行，无需网络",
+                        text="服装样品正反面 AI+CV 拼接工具\n\n"
+                             "技术栈： rembg / customtkinter / Pillow / NumPy / SciPy\n"
+                             "完全离线运行，无需网络\n\n"
+                             "AI 模型缓存位置：~/.u2net/",
                         bg="#1E1E1E", fg="#CCC",
                         font=("Microsoft YaHei UI", 11),
                         justify="center")
-        info.pack(pady=(8, 4))
+        info.pack(pady=(4, 8))
 
-        # 清除模型缓存按钮
         u2net_dir = os.path.join(os.path.expanduser('~'), '.u2net')
         btn_frame = tk.Frame(self, bg="#1E1E1E")
-        btn_frame.pack(pady=(4, 16))
-        status = tk.Label(btn_frame, text="",
-                          bg="#1E1E1E", fg="#999",
-                          font=("Microsoft YaHei UI", 9))
+        btn_frame.pack(pady=(4, 12))
+        self._status = tk.Label(btn_frame, text="",
+                                bg="#1E1E1E", fg="#999",
+                                font=("Microsoft YaHei UI", 9))
         if os.path.isdir(u2net_dir):
             tk.Button(btn_frame, text="清除 AI 模型缓存",
                       bg="#555", fg="#CCC",
                       font=("Microsoft YaHei UI", 9),
-                      command=lambda s=status: self._clear_model(u2net_dir, s),
+                      command=self._clear_model,
                       padx=12, pady=4).pack()
         else:
-            status.configure(text="无模型缓存")
-        status.pack()
+            self._status.configure(text="无模型缓存")
+        self._status.pack()
 
-    def _clear_model(self, path, status_lbl):
+    def _clear_model(self):
         import shutil
+        u2net_dir = os.path.join(os.path.expanduser('~'), '.u2net')
         try:
-            shutil.rmtree(path)
-            status_lbl.configure(text="已清除，重启应用后自动恢复")
+            shutil.rmtree(u2net_dir)
+            self._status.configure(text="已清除，重启应用后自动恢复")
         except Exception:
-            status_lbl.configure(text="清除失败，请手动删除 " + path)
+            self._status.configure(text="清除失败，请手动删除 " + u2net_dir)
 
 
 class DebugWindow(tk.Toplevel):
