@@ -289,7 +289,10 @@ class ImageProcessorV11:
         arr = np.array(overlay)
         arr[mask_bool] = ((arr[mask_bool].astype(np.uint16) * 0.5 +
                            green.astype(np.uint16) * 0.5).clip(0, 255).astype(np.uint8))
-        return Image.fromarray(arr).convert("RGB")
+        out = Image.fromarray(arr).convert("RGB")
+        w, h = out.size
+        out = out.resize((500, int(500 * h / w)), Image.LANCZOS)
+        return out
 
     @staticmethod
     def _debug_bbox_overlay(img, bbox, color=(0, 255, 0)):
@@ -300,7 +303,7 @@ class ImageProcessorV11:
         x1, y1, x2, y2 = [int(v) for v in bbox]
         draw.rectangle([x1, y1, x2, y2], outline=color, width=max(2, (x2 - x1) // 150))
         w, h = out.size
-        out = out.resize((400, int(400 * h / w)), Image.LANCZOS)
+        out = out.resize((500, int(500 * h / w)), Image.LANCZOS)
         return out
 
     @staticmethod
@@ -315,7 +318,7 @@ class ImageProcessorV11:
         draw.rectangle([bx1, by1, bx2, by2], outline=(255, 180, 0), width=w)
         draw.rectangle([ax1, ay1, ax2, ay2], outline=(0, 255, 0), width=w)
         w_i, h_i = out.size
-        out = out.resize((400, int(400 * h_i / w_i)), Image.LANCZOS)
+        out = out.resize((500, int(500 * h_i / w_i)), Image.LANCZOS)
         return out
 
     @staticmethod

@@ -831,10 +831,15 @@ class DebugWindow(tk.Toplevel):
         scrollbar.pack(side="right", fill="y", pady=8)
 
         self._photos = []  # 防止 GC 回收
+        DISP_W = 500  # 统一显示宽度
         for label, img in entries:
             lbl = tk.Label(scroll_frame, text=label, bg="#1E1E1E", fg="#CCC",
                            font=("Microsoft YaHei UI", 11, "bold"))
             lbl.pack(pady=(12, 2))
+            # 缩放到统一宽度
+            w, h = img.size
+            if w != DISP_W:
+                img = img.resize((DISP_W, int(h * DISP_W / w)), Image.LANCZOS)
             photo = ImageTk.PhotoImage(img)
             self._photos.append(photo)
             img_lbl = tk.Label(scroll_frame, image=photo, bg="#1E1E1E")
