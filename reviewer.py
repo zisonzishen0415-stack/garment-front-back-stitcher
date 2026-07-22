@@ -80,10 +80,12 @@ class BBoxEditor(tk.Canvas):
         self._fit()
 
     def _fit(self):
-        if not self.pil_img: return
         cw = self.winfo_width()
         ch = self.winfo_height()
         if cw < 30 or ch < 30:
+            return
+        if not self.pil_img:
+            self._redraw()  # 显示 placeholder logo
             return
         if abs(cw - self._last_fit_w) < 4 and abs(ch - getattr(self, '_last_fit_h', 0)) < 4:
             return
@@ -332,6 +334,7 @@ class ReviewerApp(ctk.CTk):
         self.input_dir: Optional[Path] = None
         self._preview_zoom = 1.0
         self._liquified: Optional[Image.Image] = None  # 液化修改后的结果
+        self._placeholder_img = None  # 空状态水印
 
         # 流式处理
         self._proc_done = 0
@@ -357,10 +360,17 @@ class ReviewerApp(ctk.CTk):
         # 编辑器空状态 placeholder：极暗深灰水印（若隐若现高级感）
         logo_placeholder_png = LOGO_DIR / "logo_placeholder.png"
         if logo_placeholder_png.exists():
-            BBoxEditor.set_placeholder(Image.open(str(logo_placeholder_png)).convert("RGBA"))
+            self._placeholder_img = Image.open(str(logo_placeholder_png)).convert("RGBA")
+            BBoxEditor.set_placeholder(self._placeholder_img)
+        else:
+            self._placeholder_img = None
 
         self._build_ui()
         self.update_idletasks()
+        # 空状态水印：编辑器由 BBoxEditor._fit → _redraw 处理
+        # 预览 canvas 手动画一次
+        if self._placeholder_img:
+            self._draw_preview_placeholder()
         self._status_loader.configure(text="模型加载中...")
         def _on_prewarm_done():
             self._status_loader.configure(text="模型就绪")
@@ -429,6 +439,7 @@ class ReviewerApp(ctk.CTk):
         self.preview_canvas.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         self.preview_canvas.bind("<MouseWheel>", self._on_preview_wheel)
         self.preview_canvas.bind("<Enter>", lambda e: self.preview_canvas.focus_set())
+        self.preview_canvas.bind("<Configure>", self._on_preview_configure)
         main.bind("<Configure>", lambda e: left.configure(width=max(200, e.height - 8)))
 
         # 右：编辑（左右并排，占据剩余水平空间）
@@ -775,6 +786,28 @@ class ReviewerApp(ctk.CTk):
         for frac in [0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875]:
             lx = px + int(ds * frac)
             c.create_line(lx, py, lx, py + ds, fill=gray, width=1, dash=ds_sub, stipple="gray50")
+
+    def _on_preview_configure(self, event=None):
+        """预览 canvas 尺寸变化时：如果无图片，重绘水印 logo。"""
+        if not self.img_a or not self.img_b:
+            self._draw_preview_placeholder()
+
+    def _draw_preview_placeholder(self):
+        """空状态：预览 canvas 居中显示半透明水印 logo。"""
+        c = self.preview_canvas
+        if not self._placeholder_img:
+            return
+        cw_canvas = max(c.winfo_width(), 100)
+        ch_canvas = max(c.winfo_height(), 100)
+        ph = self._placeholder_img
+        pw, ph_h = ph.size
+        # 撑满 canvas 宽度，保持比例
+        dw = max(60, int(cw_canvas * 0.55))
+        dh = int(dw * ph_h / pw)
+        photo = ImageTk.PhotoImage(ph.resize((dw, dh), Image.LANCZOS))
+        c.delete("all")
+        c.create_image(cw_canvas // 2, ch_canvas // 2, anchor=tk.CENTER, image=photo)
+        self._preview_photo = photo  # keep ref
 
     def _on_preview_wheel(self, event):
         """鼠标滚轮缩放拼接预览。"""

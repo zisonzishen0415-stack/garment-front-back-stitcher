@@ -35,10 +35,13 @@ for name, target_w, color in [
     img.save(f"{name}.png")
     print(f"{name}.png  {target_w}x{int(VB_H*target_w/VB_W)}  {color}")
 
-# 水印版（编辑器空状态：极深灰色，比背景 #1E1E1E 微亮，若隐若现的高级感）
-img = render_logo(560, "#2C2C2C", paths)
+# 水印版（白色半透明 logo，暗底上若隐若现）
+img = render_logo(560, "#FFFFFF", paths)
+r, g, b, a = img.split()
+a = a.point(lambda x: int(x * 0.25))  # 只保留 25% 不透明度
+img = Image.merge("RGBA", (r, g, b, a))
 img.save("logo_placeholder.png", "PNG")
-print(f"logo_placeholder.png  560x{int(VB_H*560/VB_W)}  #2C2C2C (ultra-dark watermark)")
+print(f"logo_placeholder.png  560x{int(VB_H*560/VB_W)}  #FFFFFF alpha=25%")
 
 # Windows 图标
 Image.open("logo_ico.png").save("logo.ico", format="ICO")
