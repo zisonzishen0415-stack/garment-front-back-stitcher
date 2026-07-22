@@ -1020,9 +1020,9 @@ class ReviewerApp(ctk.CTk):
         if logo_about_png.exists():
             logo = ImageTk.PhotoImage(Image.open(str(logo_about_png)))
         w = AboutWindow(self, logo)
-        w.attributes('-topmost', True)
+        w.transient(self)
         w.grab_set()
-        self.wait_window(w)
+        w.lift()
 
 
 class AboutWindow(tk.Toplevel):
