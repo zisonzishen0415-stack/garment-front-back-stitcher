@@ -249,28 +249,33 @@ class ImageProcessorV11:
                 if cy_max - cy_min >= 50:
                     j_bbox_a = self._bbox_in_range(mask_a, cy_min, cy_max)
                     j_bbox_b = self._bbox_in_range(mask_b, cy_min, cy_max)
+                    # 快照 consensus 提炼前 → 后对比
                     if j_bbox_a:
+                        debug.append(("④ 共识提炼 A (橙=前 绿=后)",
+                                      self._debug_rod_compare(img_a, bbox_a, j_bbox_a)))
                         bbox_a = j_bbox_a
                     if j_bbox_b:
+                        debug.append(("④ 共识提炼 B (橙=前 绿=后)",
+                                      self._debug_rod_compare(img_b, bbox_b, j_bbox_b)))
                         bbox_b = j_bbox_b
 
-        # 4. 杆子裁剪前后对比
+        # 5. 杆子裁剪前后对比
         if bbox_a:
             rod_bbox_a = self._trim_rod_bottom(img_a, mask_a, bbox_a)
             if rod_bbox_a != bbox_a:
-                debug.append(("④ 杆子裁剪 A", self._debug_rod_compare(img_a, bbox_a, rod_bbox_a)))
+                debug.append(("⑤ 杆子裁剪 A (橙=前 绿=后)", self._debug_rod_compare(img_a, bbox_a, rod_bbox_a)))
             bbox_a = rod_bbox_a
         if bbox_b:
             rod_bbox_b = self._trim_rod_bottom(img_b, mask_b, bbox_b)
             if rod_bbox_b != bbox_b:
-                debug.append(("④ 杆子裁剪 B", self._debug_rod_compare(img_b, bbox_b, rod_bbox_b)))
+                debug.append(("⑤ 杆子裁剪 B (橙=前 绿=后)", self._debug_rod_compare(img_b, bbox_b, rod_bbox_b)))
             bbox_b = rod_bbox_b
 
-        # 5. 最终 bbox
+        # 6. 最终 bbox
         if bbox_a:
-            debug.append(("⑤ 最终结果 A", self._debug_bbox_overlay(img_a, bbox_a, color=(0, 255, 0))))
+            debug.append(("⑥ 最终结果 A", self._debug_bbox_overlay(img_a, bbox_a, color=(0, 255, 0))))
         if bbox_b:
-            debug.append(("⑤ 最终结果 B", self._debug_bbox_overlay(img_b, bbox_b, color=(0, 255, 0))))
+            debug.append(("⑥ 最终结果 B", self._debug_bbox_overlay(img_b, bbox_b, color=(0, 255, 0))))
 
         return bbox_a, bbox_b, debug
 
