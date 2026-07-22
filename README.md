@@ -117,6 +117,24 @@ python reviewer.py
 └── README.md
 ```
 
+## 打包为 EXE
+
+```bash
+pip install pyinstaller svgpathtools
+
+# 1. 生成 Logo 图标
+python build_icon.py
+
+# 2. 复制 rembg AI 模型（约 168MB，首次使用 rembg 时已下载到 ~/.u2net/）
+mkdir models
+cp ~/.u2net/u2net.onnx models/
+
+# 3. 构建
+python -m PyInstaller garment-stitcher.spec
+```
+
+构建产物：`dist/GarmentStitcher.exe`（约 127MB，包含模型和所有依赖）
+
 ## 输入要求
 
 - 文件名按字典序排列，两两配对（奇数位正面，偶数位反面）
