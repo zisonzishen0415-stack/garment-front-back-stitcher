@@ -547,6 +547,8 @@ class ReviewerApp(ctk.CTk):
         if not self.pairs or self.pair_idx >= self._proc_done:
             return
 
+        self.update_idletasks()  # 强制布局完成，确保编辑器画布有真实尺寸
+
         pa, pb = self.pairs[self.pair_idx]
         self.lbl_idx.configure(text=f"{self.pair_idx + 1} / {self._proc_total}")
         self.lbl_fname.configure(text=f"{pa.stem}  +  {pb.stem}")
