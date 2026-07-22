@@ -121,6 +121,8 @@ class BBoxEditor(tk.Canvas):
             rotated.append((cx + dx * cos_a - dy * sin_a, cy + dx * sin_a + dy * cos_a))
         return rotated
 
+    PLACEHOLDER_W = 160  # 统一定宽，三区域尺寸一致
+
     def _redraw(self):
         """完整重绘：背景图 + 叠加层"""
         self.delete("all")
@@ -131,8 +133,8 @@ class BBoxEditor(tk.Canvas):
                 cw = max(self.winfo_width(), 50)
                 ch = max(self.winfo_height(), 50)
                 pw, ph_h = ph.size
-                s = min(cw / pw, ch / ph_h) * 0.4
-                dw, dh = int(pw * s), int(ph_h * s)
+                dw = min(self.PLACEHOLDER_W, cw - 20)
+                dh = int(dw * ph_h / pw)
                 self._photo = ImageTk.PhotoImage(ph.resize((dw, dh), Image.LANCZOS))
                 self.create_image(cw // 2, ch // 2, anchor=tk.CENTER, image=self._photo, tags="all")
             return
@@ -800,8 +802,8 @@ class ReviewerApp(ctk.CTk):
         ch_canvas = max(c.winfo_height(), 100)
         ph = self._preview_placeholder
         pw, ph_h = ph.size
-        s = min(cw_canvas / pw, ch_canvas / ph_h) * 0.4
-        dw, dh = int(pw * s), int(ph_h * s)
+        dw = min(BBoxEditor.PLACEHOLDER_W, cw_canvas - 20)
+        dh = int(dw * ph_h / pw)
         photo = ImageTk.PhotoImage(ph.resize((dw, dh), Image.LANCZOS))
         c.delete("all")
         c.create_image(cw_canvas // 2, ch_canvas // 2, anchor=tk.CENTER, image=photo)
