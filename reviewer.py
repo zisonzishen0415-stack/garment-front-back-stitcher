@@ -547,8 +547,9 @@ class ReviewerApp(ctk.CTk):
             self.entry_dir.insert(0, path)
             d = Path(path)
             ann = d / "annotations.json"
+            self.update_idletasks()
             if ann.exists():
-                self._start_process(auto_load=True)
+                self.after_idle(lambda: self._start_process(auto_load=True))
             else:
                 self.status.configure(text="已选文件夹，点击「AI 处理」开始")
 
