@@ -539,9 +539,10 @@ class ReviewerApp(ctk.CTk):
             for a in data.get("annotations", []):
                 self.annotations[a["file"]] = a
 
-        # 如果标注覆盖了所有配对，跳过 AI，直接加载
+        # 首次打开：如果标注覆盖所有配对，直接加载（不跑 AI）
         paired_names = {p[0].name for p in self.pairs} | {p[1].name for p in self.pairs}
-        if paired_names <= set(self.annotations.keys()):
+        is_first_load = (self._results is None or len(self._results) == 0)
+        if is_first_load and paired_names <= set(self.annotations.keys()):
             self._proc_total = len(self.pairs)
             self._proc_done = self._proc_total
             self._results = [None] * self._proc_total
@@ -551,8 +552,10 @@ class ReviewerApp(ctk.CTk):
             self.lbl_idx.configure(text=f"1 / {self._proc_total}")
             self.btn_prev.configure(state="disabled")
             self.btn_next.configure(state="normal" if self._proc_done > 1 else "disabled")
-            self.status.configure(text=f"已加载 {self._proc_total} 对标注，无需重新处理")
+            self.status.configure(text=f"已加载 {self._proc_total} 对标注，再次点击将重新 AI 处理")
             return
+        # 再次点击「AI 处理」→ 清空标注，强制重跑
+        self.annotations = {}
 
         self._proc_total = len(self.pairs)
         self._proc_done = 0
