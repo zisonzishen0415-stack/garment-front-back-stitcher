@@ -373,10 +373,15 @@ class ReviewerApp(ctk.CTk):
         if self._preview_placeholder:
             self._draw_preview_placeholder()
         self._status_loader.configure(text="模型加载中...")
-        def _on_prewarm_done():
+        self.processor.prewarm()
+        self.after(200, self._check_prewarm)
+
+    def _check_prewarm(self):
+        if getattr(self.processor, '_warmed', True):
             self._status_loader.configure(text="模型就绪")
             self.after(3000, lambda: self._status_loader.configure(text=""))
-        self.processor.prewarm(on_done=lambda: self.after(0, _on_prewarm_done))
+        else:
+            self.after(200, self._check_prewarm)
 
     # ── UI ────────────────────────────────────────────────────
 
@@ -388,7 +393,7 @@ class ReviewerApp(ctk.CTk):
         self.entry_dir = ctk.CTkEntry(bar, width=280)
         self.entry_dir.pack(side="left", padx=4)
         ctk.CTkButton(bar, text="浏览", width=50, command=self._pick_dir).pack(side="left", padx=2)
-        ctk.CTkButton(bar, text="AI 处理", width=70, command=self._start_process).pack(side="left", padx=(10, 2))
+        ctk.CTkButton(bar, text="AI 处理", width=70, command=lambda: self._start_process()).pack(side="left", padx=(10, 2))
         self.btn_debug = ctk.CTkButton(bar, text="调试", width=50,
                                         command=self._start_debug, state="disabled")
         self.btn_debug.pack(side="left", padx=2)
@@ -538,11 +543,11 @@ class ReviewerApp(ctk.CTk):
             d = Path(path)
             ann = d / "annotations.json"
             if ann.exists():
-                self._start_process()  # 有标注：秒加载
+                self._start_process(auto_load=True)
             else:
                 self.status.configure(text="已选文件夹，点击「AI 处理」开始")
 
-    def _start_process(self):
+    def _start_process(self, auto_load=False):
         d = self.entry_dir.get().strip()
         if not d or not Path(d).is_dir():
             self.status.configure(text="请先选择有效的文件夹")
@@ -558,32 +563,40 @@ class ReviewerApp(ctk.CTk):
             self.status.configure(text="未找到可配对的图片")
             return
 
+        # 清除上次结果
+        self.annotations = {}
+        self._results = []
+        self._liquified = None
+        self._first_loaded = False
         self.btn_debug.configure(state="normal")
 
-        # 加载已有标注
+        # 加载标注文件
         ann_path = self.input_dir / "annotations.json"
         if ann_path.exists():
             data = json.loads(ann_path.read_text("utf-8"))
             for a in data.get("annotations", []):
                 self.annotations[a["file"]] = a
 
-        # 首次打开：如果标注覆盖所有配对，直接加载（不跑 AI）
-        paired_names = {p[0].name for p in self.pairs} | {p[1].name for p in self.pairs}
-        is_first_load = (self._results is None or len(self._results) == 0)
-        if is_first_load and paired_names <= set(self.annotations.keys()):
-            self._proc_total = len(self.pairs)
-            self._proc_done = self._proc_total
-            self._results = [None] * self._proc_total
-            self.pair_idx = 0
-            self._first_loaded = True
-            self._load_current_pair()
-            self.lbl_idx.configure(text=f"1 / {self._proc_total}")
-            self.btn_prev.configure(state="disabled")
-            self.btn_next.configure(state="normal" if self._proc_done > 1 else "disabled")
-            self.status.configure(text=f"已加载 {self._proc_total} 对标注，再次点击将重新 AI 处理")
-            return
-        # 再次点击「AI 处理」→ 清空标注，强制重跑
-        self.annotations = {}
+        # auto_load 模式：标注覆盖全 → 秒开；不覆盖 → 跑 AI
+        # 手动点击「AI 处理」→ 永远跑 AI（auto_load=False）
+        if auto_load:
+            paired_names = {p[0].name for p in self.pairs} | {p[1].name for p in self.pairs}
+            if paired_names <= set(self.annotations.keys()):
+                self._proc_total = len(self.pairs)
+                self._proc_done = self._proc_total
+                self._results = [None] * self._proc_total
+                self.pair_idx = 0
+                self._first_loaded = True
+                self._load_current_pair()
+                self.lbl_idx.configure(text=f"1 / {self._proc_total}")
+                self.btn_prev.configure(state="disabled")
+                self.btn_next.configure(state="normal" if self._proc_done > 1 else "disabled")
+                self.status.configure(text=f"已加载 {self._proc_total} 对标注")
+                return
+            # 标注不完整 → 继续跑 AI
+        else:
+            # 手动点击：丢弃标注，强制重跑
+            self.annotations = {}
 
         self._proc_total = len(self.pairs)
         self._proc_done = 0

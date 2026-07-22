@@ -34,13 +34,13 @@ class ImageProcessorV11:
             self._session = new_session()
         return self._session
 
-    def prewarm(self, on_done=None):
-        """后台加载 u2net 模型（168MB），消除第一对的等待时间。"""
+    def prewarm(self):
+        """启动后台线程加载 u2net 模型。完成后设置 _warmed 标志。"""
+        self._warmed = False
         import threading
         def _load():
             self._get_session()
-            if on_done:
-                on_done()
+            self._warmed = True
         threading.Thread(target=_load, daemon=True).start()
 
     # -- 公共入口 --------------------------------------------------------
