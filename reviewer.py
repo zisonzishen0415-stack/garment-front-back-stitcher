@@ -360,7 +360,11 @@ class ReviewerApp(ctk.CTk):
             BBoxEditor.set_placeholder(Image.open(str(logo_placeholder_png)).convert("RGBA"))
 
         self._build_ui()
-        self.after(500, self.processor.prewarm)  # 启动后后台加载 AI 模型
+        self._status_loader.configure(text="⏳ AI模型加载中…")
+        self.processor.prewarm(on_done=lambda: (
+            self._status_loader.configure(text="✅ 就绪"),
+            self.after(3000, lambda: self._status_loader.configure(text=""))
+        ))
 
     # ── UI ────────────────────────────────────────────────────
 
@@ -460,9 +464,14 @@ class ReviewerApp(ctk.CTk):
         self.editor_b = BBoxEditor(frame_b, on_change=self._on_bbox_changed)
         self.editor_b.pack(fill="both", expand=True, padx=4, pady=(2, 4))
 
-        # 状态栏
-        self.status = ctk.CTkLabel(self, text="就绪 — 选择文件夹并点击「AI 处理」", anchor="w")
-        self.status.pack(fill="x", padx=12, pady=(0, 6))
+        # 状态栏（左侧状态文字 + 右侧加载提示）
+        status_frame = ctk.CTkFrame(self, fg_color="transparent")
+        status_frame.pack(fill="x", padx=12, pady=(0, 6))
+        self.status = ctk.CTkLabel(status_frame, text="就绪 — 选择文件夹并点击「AI 处理」", anchor="w")
+        self.status.pack(side="left")
+        self._status_loader = ctk.CTkLabel(status_frame, text="", text_color="#FFA500",
+                                            font=ctk.CTkFont(size=11))
+        self._status_loader.pack(side="right", padx=(8, 0))
 
         # 键盘
         self.bind("<Right>", lambda e: self._next_pair())
@@ -567,6 +576,7 @@ class ReviewerApp(ctk.CTk):
         self.btn_next.configure(state="disabled")
         self.lbl_idx.configure(text="0 / 0")
         self.status.configure(text=f"AI+CV 处理中... 0/{self._proc_total}")
+        self._status_loader.configure(text="")
 
         def worker():
             for i, (pa, pb) in enumerate(self.pairs):
