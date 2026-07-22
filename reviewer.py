@@ -345,16 +345,20 @@ class ReviewerApp(ctk.CTk):
         main = ctk.CTkFrame(self)
         main.pack(fill="both", expand=True, padx=8, pady=(4, 8))
 
-        # 左：1:1 预览（拼接结果本身是正方形，canvas 填满可用空间）
+        # 左：1:1 预览（grid weight=3，右权重=2，60/40 分配）
+        main.grid_columnconfigure(0, weight=3)
+        main.grid_columnconfigure(1, weight=2)
+        main.grid_rowconfigure(0, weight=1)
+
         left = ctk.CTkFrame(main)
-        left.pack(side="left", fill="both", expand=True, padx=(4, 2), pady=4)
+        left.grid(row=0, column=0, sticky="nsew", padx=(4, 2), pady=4)
         ctk.CTkLabel(left, text="拼接预览", font=ctk.CTkFont(weight="bold")).pack(pady=(6, 2))
         self.preview_canvas = tk.Canvas(left, bg="#1E1E1E", highlightthickness=0)
         self.preview_canvas.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
         # 右：编辑（左右并排）
         right = ctk.CTkFrame(main)
-        right.pack(side="left", fill="both", expand=True, padx=(2, 4), pady=4)
+        right.grid(row=0, column=1, sticky="nsew", padx=(2, 4), pady=4)
 
         # -- 正面（左） --
         frame_a = ctk.CTkFrame(right)
@@ -844,7 +848,7 @@ class DebugWindow(tk.Toplevel):
         # 绑定到画布（仅当鼠标在画布上方时生效），避免全局泄漏
         canvas.bind("<MouseWheel>", _on_mousewheel)
         canvas.bind("<Enter>", lambda e: canvas.focus_set())
-        self.bind("<Destroy>", lambda e: canvas.unbind_all("<MouseWheel>"))
+        self.bind("<Destroy>", lambda e: canvas.unbind("<MouseWheel>"))
 
 
 def main():

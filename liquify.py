@@ -351,7 +351,7 @@ class LiquifyCanvas(tk.Canvas):
     def _on_motion(self, event):
         """鼠标移动时显示三层同心笔刷光标"""
         self.delete("cursor")
-        if self._mode in ('pan', 'zoom'):
+        if self._mode in ('pan', 'zoom', 'warp'):
             return
         r = int(self.brush_radius * self.scale)
         if r < 3:
