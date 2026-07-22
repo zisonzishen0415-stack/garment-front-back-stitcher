@@ -129,11 +129,11 @@ python build_icon.py
 mkdir models
 cp ~/.u2net/u2net.onnx models/
 
-# 3. 构建
+# 3. 构建单个 EXE
 python -m PyInstaller garment-stitcher.spec
 ```
 
-构建产物：`dist/GarmentStitcher.exe`（约 127MB，包含模型和所有依赖）
+构建产物：`dist/GarmentStitcher.exe`（单文件，~127MB，双击即用）
 
 ## 输入要求
 

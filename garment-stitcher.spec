@@ -1,12 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller 打包配置
+"""PyInstaller onefile 打包配置
 用法:
-  python build_icon.py            # 生成 logo PNG/ICO
-  mkdir models                     # 准备模型目录
-  cp ~/.u2net/u2net.onnx models/  # 复制 rembg 模型（168MB）
-  pyinstaller garment-stitcher.spec
+  python build_icon.py
+  mkdir models && cp ~/.u2net/u2net.onnx models/
+  python -m PyInstaller garment-stitcher.spec
+输出: dist/GarmentStitcher.exe (单文件，无需安装)
 """
-import sys
 from pathlib import Path
 
 PROJECT = Path(SPECPATH).parent
@@ -15,8 +14,8 @@ _datas = [
     ('logo.ico', '.'),
     ('logo_toolbar.png', '.'),
     ('logo_about.png', '.'),
+    ('logo_placeholder.png', '.'),
 ]
-# rembg u2net 模型（如存在则捆绑）
 _u2net = PROJECT / 'models' / 'u2net.onnx'
 if _u2net.exists():
     _datas.append((str(_u2net), 'models'))
@@ -31,6 +30,7 @@ a = Analysis(
         'skimage', 'pymatting', 'pooch',
         'customtkinter', 'PIL', 'PIL.ImageTk', 'PIL.ImageDraw',
         'numpy', 'scipy', 'scipy.ndimage',
+        'tkinter.ttk',
     ],
     hookspath=[],
     hooksconfig={},
