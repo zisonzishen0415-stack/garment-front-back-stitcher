@@ -542,6 +542,7 @@ class ReviewerApp(ctk.CTk):
     def _pick_dir(self):
         from tkinter import filedialog
         path = filedialog.askdirectory(title="选择原图文件夹")
+        print(f'[DEBUG] _pick_dir path={path}')
         if path:
             self.entry_dir.delete(0, "end")
             self.entry_dir.insert(0, path)
@@ -549,11 +550,14 @@ class ReviewerApp(ctk.CTk):
             ann = d / "annotations.json"
             self.update_idletasks()
             if ann.exists():
+                print(f'[DEBUG] annotations.json exists, scheduling after_idle')
                 self.after_idle(lambda: self._start_process(auto_load=True))
             else:
+                print(f'[DEBUG] no annotations.json')
                 self.status.configure(text="已选文件夹，点击「AI 处理」开始")
 
     def _start_process(self, auto_load=False):
+        print(f'[DEBUG] _start_process called auto_load={auto_load}')
         d = self.entry_dir.get().strip()
         if not d or not Path(d).is_dir():
             self.status.configure(text="请先选择有效的文件夹")
@@ -588,18 +592,21 @@ class ReviewerApp(ctk.CTk):
         if auto_load:
             paired_names = {p[0].name for p in self.pairs} | {p[1].name for p in self.pairs}
             if paired_names <= set(self.annotations.keys()):
+                print(f'[DEBUG] auto_load matched: {len(self.pairs)} pairs, loading instantly')
                 self._proc_total = len(self.pairs)
                 self._proc_done = self._proc_total
                 self._results = [None] * self._proc_total
                 self.pair_idx = 0
                 self._first_loaded = True
                 self._load_current_pair()
+                print(f'[DEBUG] _load_current_pair done, img_a={self.img_a is not None}, bbox_a={self.bbox_a}')
                 self.lbl_idx.configure(text=f"1 / {self._proc_total}")
                 self.btn_prev.configure(state="disabled")
                 self.btn_next.configure(state="normal" if self._proc_done > 1 else "disabled")
                 self.status.configure(text=f"已加载 {self._proc_total} 对标注")
+                print(f'[DEBUG] auto_load complete, editor_a pil={self.editor_a.pil_img is not None}')
                 return
-            # 标注不完整 → 继续跑 AI
+            print(f'[DEBUG] auto_load partial match: paired={len(paired_names)}, annotated={len(self.annotations)}')
         else:
             # 手动点击：丢弃标注，强制重跑
             self.annotations = {}
@@ -692,7 +699,9 @@ class ReviewerApp(ctk.CTk):
     # ── 加载 ──────────────────────────────────────────────────
 
     def _load_current_pair(self):
+        print(f'[DEBUG] _load_current_pair: pair_idx={self.pair_idx} proc_done={self._proc_done}')
         if not self.pairs or self.pair_idx >= self._proc_done:
+            print(f'[DEBUG] _load_current_pair: SKIP (no pairs or idx>=done)')
             return
 
         self._liquified = None  # 切图时清除液化缓存
@@ -731,9 +740,11 @@ class ReviewerApp(ctk.CTk):
 
         self.editor_a.set_image(self.img_a, self.bbox_a, self.ai_bbox_a, self.angle_a)
         self.editor_b.set_image(self.img_b, self.bbox_b, self.ai_bbox_b, self.angle_b)
+        print(f'[DEBUG] set_image done. editor_a pil={self.editor_a.pil_img is not None} scale={self.editor_a.scale}')
         self.lbl_angle_a.configure(text=f"{self.angle_a:+.1f}°")
         self.lbl_angle_b.configure(text=f"{self.angle_b:+.1f}°")
         self._update_preview()
+        print(f'[DEBUG] _update_preview done')
 
     # ── 预览 ──────────────────────────────────────────────────
 
