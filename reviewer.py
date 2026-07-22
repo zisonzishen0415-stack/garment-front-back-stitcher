@@ -831,49 +831,72 @@ class ReviewerApp(ctk.CTk):
 
 
 class DebugWindow(tk.Toplevel):
-    """可滚动的调试图像展示窗口。"""
+    """Scrollable debug image viewer - each step shows A/B side by side."""
 
-    def __init__(self, parent, entries, title="调试"):
+    def __init__(self, parent, entries, title="debug"):
         super().__init__(parent)
         self.title(title)
-        self.geometry("760x800")
+        self.geometry("1050x800")
         self.configure(bg="#1E1E1E")
 
-        info = tk.Label(self, text=f"共 {len(entries)} 步", bg="#1E1E1E", fg="#999",
+        # Group entries by step name (without trailing " A"/" B" suffix)
+        steps = {}   # step_name -> {"img_a": Image, "img_b": Image}
+        order = []   # insertion order
+        for label, img in entries:
+            if label.endswith(" A") or label.endswith(" B"):
+                name = label[:-2]
+                side = label[-1]  # "A" or "B"
+            else:
+                name = label
+                side = None
+            if name not in steps:
+                steps[name] = {}
+                order.append(name)
+            if side == "B":
+                steps[name]["img_b"] = img
+            else:
+                steps[name]["img_a"] = img
+
+        info = tk.Label(self, text=f"共 {len(order)} 步", bg="#1E1E1E", fg="#999",
                         font=("Microsoft YaHei UI", 10))
         info.pack(pady=(8, 4))
 
         canvas = tk.Canvas(self, bg="#1E1E1E", highlightthickness=0)
         scrollbar = tk.Scrollbar(self, orient="vertical", command=canvas.yview)
         scroll_frame = tk.Frame(canvas, bg="#1E1E1E")
-
         scroll_frame.bind("<Configure>",
                           lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
-
         canvas.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=8)
         scrollbar.pack(side="right", fill="y", pady=8)
 
-        self._photos = []  # 防止 GC 回收
-        DISP_W = 500  # 统一显示宽度
-        for label, img in entries:
-            lbl = tk.Label(scroll_frame, text=label, bg="#1E1E1E", fg="#CCC",
+        self._photos = []
+        MAX_W = 480
+
+        for name in order:
+            data = steps[name]
+            lbl = tk.Label(scroll_frame, text=name, bg="#1E1E1E", fg="#CCC",
                            font=("Microsoft YaHei UI", 11, "bold"))
             lbl.pack(pady=(12, 2))
-            # 缩放到统一宽度
-            w, h = img.size
-            if w != DISP_W:
-                img = img.resize((DISP_W, int(h * DISP_W / w)), Image.LANCZOS)
-            photo = ImageTk.PhotoImage(img)
-            self._photos.append(photo)
-            img_lbl = tk.Label(scroll_frame, image=photo, bg="#1E1E1E")
-            img_lbl.pack(pady=(0, 6))
+
+            img_a = data.get("img_a")
+            img_b = data.get("img_b")
+            pair_frame = tk.Frame(scroll_frame, bg="#1E1E1E")
+            pair_frame.pack(pady=(0, 6))
+
+            for img in [img_a, img_b]:
+                if img is None:
+                    continue
+                w, h = img.size
+                if w > MAX_W:
+                    img = img.resize((MAX_W, int(h * MAX_W / w)), Image.LANCZOS)
+                photo = ImageTk.PhotoImage(img)
+                self._photos.append(photo)
+                tk.Label(pair_frame, image=photo, bg="#1E1E1E").pack(side="left", padx=3)
 
         def _on_mousewheel(event):
             canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-
-        # 滚轮滚动（绑定到 Toplevel，随窗口销毁自动清理）
         self.bind("<MouseWheel>", _on_mousewheel)
 
 
