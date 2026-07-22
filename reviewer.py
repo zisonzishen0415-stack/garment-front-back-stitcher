@@ -14,7 +14,7 @@ import customtkinter as ctk
 from processor_v11 import ImageProcessorV11 as ImageProcessor
 from liquify import LiquifyTool
 
-MARGIN = 0.12
+MARGIN = 0.18  # bbox 四周余量，避免袖子等宽部位贴边
 HANDLE_SIZE = 5
 BOX_COLOR = "#00FF00"
 HANDLE_COLOR = "#FF4444"
