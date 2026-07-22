@@ -638,8 +638,12 @@ class ReviewerApp(ctk.CTk):
         th = min(crop_a.height, crop_b.height); th += th % 2; hw = th // 2
         left = crop_a.resize((hw, th), Image.LANCZOS)
         right = crop_b.resize((hw, th), Image.LANCZOS)
-        preview = Image.new("RGB", (th, th), (255, 255, 255))
-        preview.paste(left, (0, 0)); preview.paste(right, (hw, 0))
+        # 四周边距（预览画布比例），避免袖子贴边
+        margin = int(th * 0.04)
+        padded = th + margin * 2
+        preview = Image.new("RGB", (padded, padded), (255, 255, 255))
+        preview.paste(left, (margin, margin))
+        preview.paste(right, (margin + hw, margin))
 
         c = self.preview_canvas
         cw_canvas = max(c.winfo_width(), 100); ch_canvas = max(c.winfo_height(), 100)
