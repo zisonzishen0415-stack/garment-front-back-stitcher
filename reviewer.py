@@ -14,7 +14,7 @@ import customtkinter as ctk
 from processor_v11 import ImageProcessorV11 as ImageProcessor
 from liquify import LiquifyTool
 
-MARGIN = 0.16
+MARGIN = 0.12
 HANDLE_SIZE = 5
 BOX_COLOR = "#00FF00"
 HANDLE_COLOR = "#FF4444"
@@ -609,12 +609,10 @@ class ReviewerApp(ctk.CTk):
             img = img.rotate(angle, Image.BICUBIC, center=(cx, cy),
                              expand=False, fillcolor=(255, 255, 255))
         w, h = img.size; x1, y1, x2, y2 = bbox
-        bcy = (y1 + y2) / 2; bw = x2 - x1
+        bcy = (y1 + y2) / 2; bcx = (x1 + x2) / 2
         crop_h = crop_w * 2
-        if anchor == "right":
-            right = min(w, int(x2 + bw * MARGIN)); cx = right - crop_w
-        else:
-            left = max(0, int(x1 - bw * MARGIN)); cx = left
+        # bbox 居中于裁切窗口，正反面左右余量对称
+        cx = int(bcx - crop_w / 2)
         if cx < 0: cx = 0
         if cx + crop_w > w: cx = w - crop_w
         cy = int(bcy - crop_h / 2)
