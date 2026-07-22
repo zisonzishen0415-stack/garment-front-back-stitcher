@@ -12,6 +12,7 @@ from PIL import Image, ImageOps, ImageTk
 import customtkinter as ctk
 
 from processor_v11 import ImageProcessorV11 as ImageProcessor
+from liquify import LiquifyTool
 
 MARGIN = 0.12
 HANDLE_SIZE = 5
@@ -67,7 +68,7 @@ class BBoxEditor(tk.Canvas):
         cw = max(self.winfo_width(), 50)
         ch = max(self.winfo_height(), 50)
         iw, ih = self.pil_img.size
-        s = min(cw / iw, ch / ih, 0.5) * 0.85
+        s = min(cw / iw, ch / ih) * 0.85
         self.scale = max(0.02, s)
         self.ox = (cw - iw * self.scale) / 2
         self.oy = (ch - ih * self.scale) / 2
@@ -324,7 +325,8 @@ class ReviewerApp(ctk.CTk):
 
         ctk.CTkButton(bar, text="⇄ 互换", width=60, command=self._swap_fb).pack(side="left", padx=2)
         ctk.CTkButton(bar, text="重置AI", width=60, command=self._reset_ai).pack(side="left", padx=2)
-        ctk.CTkButton(bar, text="适应", width=50, command=self._fit_editors).pack(side="left", padx=2)
+        ctk.CTkButton(bar, text="液化", width=50, fg_color="#6B3FA0", hover_color="#56338A",
+                       command=self._liquify).pack(side="left", padx=2)
 
         ctk.CTkFrame(bar, width=1, height=24, fg_color="#555").pack(side="left", padx=10)
 
@@ -346,34 +348,39 @@ class ReviewerApp(ctk.CTk):
         self.preview_canvas = tk.Canvas(left, bg="#1E1E1E", highlightthickness=0)
         self.preview_canvas.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
-        # 右：编辑
-        right = ctk.CTkFrame(main, width=700)
-        right.pack(side="right", fill="both", padx=(2, 4), pady=4)
-        right.pack_propagate(False)
+        # 右：编辑（左右并排）
+        right = ctk.CTkFrame(main)
+        right.pack(side="right", fill="both", expand=True, padx=(2, 4), pady=4)
 
-        # 正面上方：标签 + 角度控制
-        row_a = ctk.CTkFrame(right)
-        row_a.pack(fill="x", padx=8, pady=(8, 2))
+        # -- 正面（左） --
+        frame_a = ctk.CTkFrame(right)
+        frame_a.pack(side="left", fill="both", expand=True, padx=(2, 2), pady=4)
+
+        row_a = ctk.CTkFrame(frame_a)
+        row_a.pack(fill="x", padx=4, pady=(4, 2))
         ctk.CTkLabel(row_a, text="正面", font=ctk.CTkFont(weight="bold")).pack(side="left")
-        ctk.CTkButton(row_a, text="◀", width=24, command=lambda: self._adj_angle('a', -0.5)).pack(side="right", padx=1)
-        self.lbl_angle_a = ctk.CTkLabel(row_a, text="0.0°", width=45, font=ctk.CTkFont(size=12))
-        self.lbl_angle_a.pack(side="right", padx=4)
-        ctk.CTkButton(row_a, text="▶", width=24, command=lambda: self._adj_angle('a', +0.5)).pack(side="right", padx=1)
+        ctk.CTkButton(row_a, text="↻顺", width=30, command=lambda: self._adj_angle('a', -0.5)).pack(side="right", padx=1)
+        self.lbl_angle_a = ctk.CTkLabel(row_a, text="0.0°", width=40, font=ctk.CTkFont(size=11))
+        self.lbl_angle_a.pack(side="right", padx=2)
+        ctk.CTkButton(row_a, text="↺逆", width=30, command=lambda: self._adj_angle('a', +0.5)).pack(side="right", padx=1)
 
-        self.editor_a = BBoxEditor(right, on_change=self._on_bbox_changed, height=320)
-        self.editor_a.pack(fill="x", padx=8, pady=(2, 6))
+        self.editor_a = BBoxEditor(frame_a, on_change=self._on_bbox_changed)
+        self.editor_a.pack(fill="both", expand=True, padx=4, pady=(2, 4))
 
-        # 反面上方：标签 + 角度控制
-        row_b = ctk.CTkFrame(right)
-        row_b.pack(fill="x", padx=8, pady=(6, 2))
+        # -- 反面（右） --
+        frame_b = ctk.CTkFrame(right)
+        frame_b.pack(side="left", fill="both", expand=True, padx=(2, 2), pady=4)
+
+        row_b = ctk.CTkFrame(frame_b)
+        row_b.pack(fill="x", padx=4, pady=(4, 2))
         ctk.CTkLabel(row_b, text="反面", font=ctk.CTkFont(weight="bold")).pack(side="left")
-        ctk.CTkButton(row_b, text="◀", width=24, command=lambda: self._adj_angle('b', -0.5)).pack(side="right", padx=1)
-        self.lbl_angle_b = ctk.CTkLabel(row_b, text="0.0°", width=45, font=ctk.CTkFont(size=12))
-        self.lbl_angle_b.pack(side="right", padx=4)
-        ctk.CTkButton(row_b, text="▶", width=24, command=lambda: self._adj_angle('b', +0.5)).pack(side="right", padx=1)
+        ctk.CTkButton(row_b, text="↻顺", width=30, command=lambda: self._adj_angle('b', -0.5)).pack(side="right", padx=1)
+        self.lbl_angle_b = ctk.CTkLabel(row_b, text="0.0°", width=40, font=ctk.CTkFont(size=11))
+        self.lbl_angle_b.pack(side="right", padx=2)
+        ctk.CTkButton(row_b, text="↺逆", width=30, command=lambda: self._adj_angle('b', +0.5)).pack(side="right", padx=1)
 
-        self.editor_b = BBoxEditor(right, on_change=self._on_bbox_changed, height=320)
-        self.editor_b.pack(fill="x", padx=8, pady=(2, 6))
+        self.editor_b = BBoxEditor(frame_b, on_change=self._on_bbox_changed)
+        self.editor_b.pack(fill="both", expand=True, padx=4, pady=(2, 4))
 
         # 状态栏
         self.status = ctk.CTkLabel(self, text="就绪 — 选择文件夹并点击「AI 处理」", anchor="w")
@@ -383,6 +390,7 @@ class ReviewerApp(ctk.CTk):
         self.bind("<Right>", lambda e: self._next_pair())
         self.bind("<Left>", lambda e: self._prev_pair())
         self.bind("<e>", lambda e: self._export_single()); self.bind("<E>", lambda e: self._export_single())
+        self.bind("<s>", lambda e: self._export_single()); self.bind("<S>", lambda e: self._export_single())
         self.bind("<f>", lambda e: self._fit_editors()); self.bind("<F>", lambda e: self._fit_editors())
         self.bind("<x>", lambda e: self._swap_fb()); self.bind("<X>", lambda e: self._swap_fb())
         self.bind("<r>", lambda e: self._reset_rotation()); self.bind("<R>", lambda e: self._reset_rotation())
@@ -638,6 +646,38 @@ class ReviewerApp(ctk.CTk):
     def _auto_save_debounce(self):
         if hasattr(self, '_auto_save_id'): self.after_cancel(self._auto_save_id)
         self._auto_save_id = self.after(800, self._auto_save)
+
+    def _liquify(self):
+        """对当前拼接结果打开液化工具"""
+        if not self.img_a or not self.img_b: return
+        # 生成当前拼接预览（全分辨率）
+        unified_cw = max(self._natural_w(self.bbox_a), self._natural_w(self.bbox_b))
+        crop_a = self._simple_crop(self.img_a, self.bbox_a, "right", unified_cw, self.angle_a)
+        crop_b = self._simple_crop(self.img_b, self.bbox_b, "left", unified_cw, self.angle_b)
+        if crop_a.width != crop_b.width:
+            tw = max(crop_a.width, crop_b.width); th = tw * 2
+            for crp, is_a in [(crop_a, True), (crop_b, False)]:
+                if crp.width != tw:
+                    tmp = Image.new("RGB", (tw, th), (255, 255, 255))
+                    tmp.paste(crp, ((tw - crp.width)//2, (th - crp.height)//2))
+                    if is_a: crop_a = tmp
+                    else:    crop_b = tmp
+        th = min(crop_a.height, crop_b.height); th += th % 2; hw = th // 2
+        stitched = Image.new("RGB", (th, th), (255, 255, 255))
+        stitched.paste(crop_a.resize((hw, th), Image.LANCZOS), (0, 0))
+        stitched.paste(crop_b.resize((hw, th), Image.LANCZOS), (hw, 0))
+
+        pa = self.pairs[self.pair_idx][0]
+        tool = LiquifyTool(stitched, f"液化 — {pa.stem}.png",
+                           on_apply=lambda result: self._on_liquify_done(result, pa))
+        self.wait_window(tool)
+
+    def _on_liquify_done(self, result, pa):
+        if result:
+            out_dir = self.input_dir / "审核输出" if self.input_dir else Path("审核输出")
+            out_dir.mkdir(parents=True, exist_ok=True)
+            result.save(out_dir / f"{pa.stem}.png", "PNG")
+            self.status.configure(text=f"液化已保存 {pa.stem}.png")
 
     def _fit_editors(self):
         self.editor_a.update_display(); self.editor_b.update_display()
