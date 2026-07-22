@@ -355,9 +355,11 @@ class ReviewerApp(ctk.CTk):
             except Exception:
                 pass
         self._logo_img = None
+        self._logo_photo = None
         logo_png = LOGO_DIR / "logo_toolbar.png"
         if logo_png.exists():
-            self._logo_img = ImageTk.PhotoImage(Image.open(str(logo_png)))
+            self._logo_photo = ImageTk.PhotoImage(Image.open(str(logo_png)))
+            self._logo_img = self._logo_photo  # 保持引用防止 GC
 
         # 编辑器空状态 placeholder：极暗深灰水印（若隐若现高级感）
         logo_placeholder_png = LOGO_DIR / "logo_placeholder.png"
@@ -377,11 +379,14 @@ class ReviewerApp(ctk.CTk):
         self.after(200, self._check_prewarm)
 
     def _check_prewarm(self):
-        if getattr(self.processor, '_warmed', True):
-            self._status_loader.configure(text="模型就绪")
-            self.after(3000, lambda: self._status_loader.configure(text=""))
-        else:
-            self.after(200, self._check_prewarm)
+        try:
+            if getattr(self.processor, '_warmed', True):
+                self._status_loader.configure(text="模型就绪")
+                self.after(3000, lambda: self._status_loader.configure(text=""))
+            else:
+                self.after(200, self._check_prewarm)
+        except tk.TclError:
+            pass  # 窗口已销毁
 
     # ── UI ────────────────────────────────────────────────────
 
