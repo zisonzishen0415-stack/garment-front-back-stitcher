@@ -213,17 +213,17 @@ class ImageProcessorV11:
         bbox_a, mask_a = self._single_pipe(img_a)
         bbox_b, mask_b = self._single_pipe(img_b)
 
-        # 1. 初步检测：rembg 分割 → Mask
-        debug.append(("① rembg 分割 A", self._debug_mask_overlay(img_a, mask_a)))
-        debug.append(("① rembg 分割 B", self._debug_mask_overlay(img_b, mask_b)))
+        # 1. AI 分割：rembg (u2net) → Mask
+        debug.append(("① AI分割(rembg) A", self._debug_mask_overlay(img_a, mask_a)))
+        debug.append(("① AI分割(rembg) B", self._debug_mask_overlay(img_b, mask_b)))
 
-        # 2. 从 Mask 提取 BBox
+        # 2. Mask → BBox
         if bbox_a:
-            debug.append(("② 初步 BBox A", self._debug_bbox_overlay(img_a, bbox_a, color=(255, 165, 0))))
+            debug.append(("② 初步BBox A", self._debug_bbox_overlay(img_a, bbox_a, color=(255, 165, 0))))
         if bbox_b:
-            debug.append(("② 初步 BBox B", self._debug_bbox_overlay(img_b, bbox_b, color=(255, 165, 0))))
+            debug.append(("② 初步BBox B", self._debug_bbox_overlay(img_b, bbox_b, color=(255, 165, 0))))
 
-        # 3. 联合轮廓匹配：宽度分布 + 共识区间
+        # 3. CV 联合轮廓分析：宽度分布 + 共识区间
         ys_a, lefts_a, rights_a = self._vertical_profile(mask_a)
         ys_b, lefts_b, rights_b = self._vertical_profile(mask_b)
 
@@ -243,7 +243,7 @@ class ImageProcessorV11:
                 consensus = ratio < CONSENSUS_RATIO_THRESHOLD
                 cy_min, cy_max = self._largest_consensus_interval(uy, consensus)
 
-                debug.append(("③ 宽度分布 & 共识区间",
+                debug.append(("③ CV宽度分布&共识区间",
                               self._debug_profile_chart(uy, wi_a, wi_b, ratio, consensus, cy_min, cy_max)))
 
                 if cy_max - cy_min >= 50:
@@ -251,11 +251,11 @@ class ImageProcessorV11:
                     j_bbox_b = self._bbox_in_range(mask_b, cy_min, cy_max)
                     # 快照 consensus 提炼前 → 后对比
                     if j_bbox_a:
-                        debug.append(("④ 共识提炼 A (橙=前 绿=后)",
+                        debug.append(("④ CV共识提炼(橙=前绿=后) A",
                                       self._debug_rod_compare(img_a, bbox_a, j_bbox_a)))
                         bbox_a = j_bbox_a
                     if j_bbox_b:
-                        debug.append(("④ 共识提炼 B (橙=前 绿=后)",
+                        debug.append(("④ CV共识提炼(橙=前绿=后) B",
                                       self._debug_rod_compare(img_b, bbox_b, j_bbox_b)))
                         bbox_b = j_bbox_b
 
@@ -263,12 +263,12 @@ class ImageProcessorV11:
         if bbox_a:
             rod_bbox_a = self._trim_rod_bottom(img_a, mask_a, bbox_a)
             if rod_bbox_a != bbox_a:
-                debug.append(("⑤ 杆子裁剪 A (橙=前 绿=后)", self._debug_rod_compare(img_a, bbox_a, rod_bbox_a)))
+                debug.append(("⑤ CV杆子裁剪(橙=前绿=后) A", self._debug_rod_compare(img_a, bbox_a, rod_bbox_a)))
             bbox_a = rod_bbox_a
         if bbox_b:
             rod_bbox_b = self._trim_rod_bottom(img_b, mask_b, bbox_b)
             if rod_bbox_b != bbox_b:
-                debug.append(("⑤ 杆子裁剪 B (橙=前 绿=后)", self._debug_rod_compare(img_b, bbox_b, rod_bbox_b)))
+                debug.append(("⑤ CV杆子裁剪(橙=前绿=后) B", self._debug_rod_compare(img_b, bbox_b, rod_bbox_b)))
             bbox_b = rod_bbox_b
 
         # 6. 最终 bbox
