@@ -332,6 +332,8 @@ class ReviewerApp(ctk.CTk):
         self.angle_b = 0.0
         self.ai_bbox_a = None
         self.ai_bbox_b = None
+        self._mask_a = None
+        self._mask_b = None
         self.annotations: dict[str, dict] = {}
         self.input_dir: Optional[Path] = None
         self._preview_zoom = 1.0
@@ -469,10 +471,13 @@ class ReviewerApp(ctk.CTk):
         row_a = ctk.CTkFrame(frame_a)
         row_a.pack(fill="x", padx=4, pady=(4, 2))
         ctk.CTkLabel(row_a, text="正面", font=ctk.CTkFont(weight="bold")).pack(side="left")
-        ctk.CTkButton(row_a, text="↻顺", width=30, command=lambda: self._adj_angle('a', -0.5)).pack(side="right", padx=1)
+        ctk.CTkButton(row_a, text="↻顺", width=30, command=lambda: self._adj_angle('a', +0.5)).pack(side="right", padx=1)
         self.lbl_angle_a = ctk.CTkLabel(row_a, text="0.0°", width=40, font=ctk.CTkFont(size=11))
         self.lbl_angle_a.pack(side="right", padx=2)
-        ctk.CTkButton(row_a, text="↺逆", width=30, command=lambda: self._adj_angle('a', +0.5)).pack(side="right", padx=1)
+        ctk.CTkButton(row_a, text="↺逆", width=30, command=lambda: self._adj_angle('a', -0.5)).pack(side="right", padx=1)
+        self.btn_reset_angle_a = ctk.CTkButton(row_a, text="⟳", width=25,
+                                               command=lambda: self._reset_angle('a'))
+        self.btn_reset_angle_a.pack(side="right", padx=1)
 
         self.editor_a = BBoxEditor(frame_a, on_change=self._on_bbox_changed)
         self.editor_a.pack(fill="both", expand=True, padx=4, pady=(2, 4))
@@ -484,10 +489,13 @@ class ReviewerApp(ctk.CTk):
         row_b = ctk.CTkFrame(frame_b)
         row_b.pack(fill="x", padx=4, pady=(4, 2))
         ctk.CTkLabel(row_b, text="反面", font=ctk.CTkFont(weight="bold")).pack(side="left")
-        ctk.CTkButton(row_b, text="↻顺", width=30, command=lambda: self._adj_angle('b', -0.5)).pack(side="right", padx=1)
+        ctk.CTkButton(row_b, text="↻顺", width=30, command=lambda: self._adj_angle('b', +0.5)).pack(side="right", padx=1)
         self.lbl_angle_b = ctk.CTkLabel(row_b, text="0.0°", width=40, font=ctk.CTkFont(size=11))
         self.lbl_angle_b.pack(side="right", padx=2)
-        ctk.CTkButton(row_b, text="↺逆", width=30, command=lambda: self._adj_angle('b', +0.5)).pack(side="right", padx=1)
+        ctk.CTkButton(row_b, text="↺逆", width=30, command=lambda: self._adj_angle('b', -0.5)).pack(side="right", padx=1)
+        self.btn_reset_angle_b = ctk.CTkButton(row_b, text="⟳", width=25,
+                                               command=lambda: self._reset_angle('b'))
+        self.btn_reset_angle_b.pack(side="right", padx=1)
 
         self.editor_b = BBoxEditor(frame_b, on_change=self._on_bbox_changed)
         self.editor_b.pack(fill="both", expand=True, padx=4, pady=(2, 4))
@@ -512,8 +520,8 @@ class ReviewerApp(ctk.CTk):
         self.bind("<F1>", lambda e: self._show_about())
         # 句号逗号微调角度
         self.bind("<comma>", lambda e: self._adj_angle('a', -0.5))
-        self.bind("<period>", lambda e: self._adj_angle('a', +0.5))
         self.bind("<comma>", lambda e: self._adj_angle('b', -0.5), add=True)
+        self.bind("<period>", lambda e: self._adj_angle('a', +0.5))
         self.bind("<period>", lambda e: self._adj_angle('b', +0.5), add=True)
 
     # ── 角度控制 ──────────────────────────────────────────────
@@ -539,7 +547,35 @@ class ReviewerApp(ctk.CTk):
         self.editor_a.angle = 0.0; self.editor_b.angle = 0.0
         self.lbl_angle_a.configure(text="0.0°"); self.lbl_angle_b.configure(text="0.0°")
         self.editor_a._redraw(); self.editor_b._redraw()
-        self._liquified = None  # 角度重置，液化作废
+        self._liquified = None
+        self._update_preview()
+        self._auto_save_debounce()
+
+    def _recalc_angle(self):
+        """镜像对齐法：反面翻转 + 旋转使共识区间最大 → 校正角。"""
+        if self._mask_a is not None and self._mask_b is not None:
+            angle_a, angle_b = self.processor.mask_centerline_angle(
+                self._mask_a, self._mask_b, self.bbox_a, self.bbox_b)
+            self.angle_a = angle_a
+            self.editor_a.angle = angle_a
+            self.lbl_angle_a.configure(text=f"{angle_a:+.1f}°")
+            self.angle_b = angle_b
+            self.editor_b.angle = angle_b
+            self.lbl_angle_b.configure(text=f"{angle_b:+.1f}°")
+
+    def _reset_angle(self, which):
+        """重置单面角度为零（杆子）并应用于该面。"""
+        if which == 'a':
+            self.angle_a = 0.0
+            self.editor_a.angle = 0.0
+            self.lbl_angle_a.configure(text="0.0°")
+            self.editor_a._redraw()
+        else:
+            self.angle_b = 0.0
+            self.editor_b.angle = 0.0
+            self.lbl_angle_b.configure(text="0.0°")
+            self.editor_b._redraw()
+        self._liquified = None
         self._update_preview()
         self._auto_save_debounce()
 
@@ -666,8 +702,8 @@ class ReviewerApp(ctk.CTk):
                     try:
                         img_a = ImageOps.exif_transpose(Image.open(pa)).convert("RGB")
                         img_b = ImageOps.exif_transpose(Image.open(pb)).convert("RGB")
-                        bb_a, bb_b = self.processor._joint_detect(img_a, img_b)
-                        self._results[i] = (bb_a, bb_b)
+                        bb_a, bb_b, mask_a, mask_b = self.processor._joint_detect(img_a, img_b)
+                        self._results[i] = (bb_a, bb_b, mask_a, mask_b)
                     except Exception:
                         self._results[i] = (None, None)
                     self.after(0, lambda idx=i: self._on_one_done(idx))
@@ -705,7 +741,7 @@ class ReviewerApp(ctk.CTk):
             if res is None or i >= len(self.pairs):
                 continue
             pa, pb = self.pairs[i]
-            bb_a, bb_b = res
+            bb_a = res[0]; bb_b = res[1]
             if bb_a:
                 self.annotations[pa.name] = {"file": pa.name, "bbox": list(bb_a), "angle": 0.0}
             if bb_b:
@@ -754,28 +790,36 @@ class ReviewerApp(ctk.CTk):
         self.img_b = ImageOps.exif_transpose(Image.open(pb)).convert("RGB")
 
         res = self._results[self.pair_idx]
-        self.ai_bbox_a, self.ai_bbox_b = res if res else (None, None)
+        if res and len(res) == 4:
+            self.ai_bbox_a, self.ai_bbox_b, self._mask_a, self._mask_b = res
+        elif res:
+            self.ai_bbox_a, self.ai_bbox_b = res[0], res[1]
+            self._mask_a = self._mask_b = None
+        else:
+            self.ai_bbox_a = self.ai_bbox_b = None
+            self._mask_a = self._mask_b = None
 
         ann_a = self.annotations.get(pa.name, {})
         ann_b = self.annotations.get(pb.name, {})
 
         if "bbox" in ann_a:
-            self.bbox_a = list(ann_a["bbox"]); self.angle_a = ann_a.get("angle", 0.0)
+            self.bbox_a = list(ann_a["bbox"])
         elif self.ai_bbox_a:
-            self.bbox_a = list(self.ai_bbox_a); self.angle_a = 0.0
+            self.bbox_a = list(self.ai_bbox_a)
         else:
             self.bbox_a = [self.img_a.width//4, self.img_a.height//4,
                            self.img_a.width*3//4, self.img_a.height*3//4]
-            self.angle_a = 0.0
 
         if "bbox" in ann_b:
-            self.bbox_b = list(ann_b["bbox"]); self.angle_b = ann_b.get("angle", 0.0)
+            self.bbox_b = list(ann_b["bbox"])
         elif self.ai_bbox_b:
-            self.bbox_b = list(self.ai_bbox_b); self.angle_b = 0.0
+            self.bbox_b = list(self.ai_bbox_b)
         else:
             self.bbox_b = [self.img_b.width//4, self.img_b.height//4,
                            self.img_b.width*3//4, self.img_b.height*3//4]
-            self.angle_b = 0.0
+
+        # Compute angle from current bbox + mask
+        self._recalc_angle()
 
         self.editor_a.set_image(self.img_a, self.bbox_a, self.ai_bbox_a, self.angle_a)
         self.editor_b.set_image(self.img_b, self.bbox_b, self.ai_bbox_b, self.angle_b)
@@ -931,13 +975,12 @@ class ReviewerApp(ctk.CTk):
 
     def _reset_ai(self):
         if self.ai_bbox_a:
-            self.bbox_a = list(self.ai_bbox_a); self.angle_a = 0.0
-            self.editor_a.bbox = list(self.ai_bbox_a); self.editor_a.angle = 0.0
-            self.lbl_angle_a.configure(text="0.0°")
+            self.bbox_a = list(self.ai_bbox_a)
+            self.editor_a.bbox = list(self.ai_bbox_a)
         if self.ai_bbox_b:
-            self.bbox_b = list(self.ai_bbox_b); self.angle_b = 0.0
-            self.editor_b.bbox = list(self.ai_bbox_b); self.editor_b.angle = 0.0
-            self.lbl_angle_b.configure(text="0.0°")
+            self.bbox_b = list(self.ai_bbox_b)
+            self.editor_b.bbox = list(self.ai_bbox_b)
+        self._recalc_angle()
         self._update_preview(); self.editor_a._redraw(); self.editor_b._redraw()
         self._auto_save()
 
@@ -1027,10 +1070,10 @@ class ReviewerApp(ctk.CTk):
         self.status.configure(text=f"全部导出完成: {ok}/{self._proc_done} → {out_dir}")
 
     def _start_debug(self):
-        """对当前第一对运行调试检测并弹出可视化窗口。"""
+        """对当前正在查看的那对运行调试检测并弹出可视化窗口。"""
         if not self.pairs or self._proc_done < 1:
             return
-        pa, pb = self.pairs[0]
+        pa, pb = self.pairs[self.pair_idx]
         try:
             ia = ImageOps.exif_transpose(Image.open(pa)).convert("RGB")
             ib = ImageOps.exif_transpose(Image.open(pb)).convert("RGB")

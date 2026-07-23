@@ -70,7 +70,7 @@ class ImageProcessorV11:
         img_a = ImageOps.exif_transpose(Image.open(img_path_a)).convert("RGB")
         img_b = ImageOps.exif_transpose(Image.open(img_path_b)).convert("RGB")
 
-        bbox_a, bbox_b = self._joint_detect(img_a, img_b)
+        bbox_a, bbox_b, _mask_a, _mask_b = self._joint_detect(img_a, img_b)
 
         # 统一crop_w
         unified_cw = self._unified_crop_w(img_a, bbox_a, img_b, bbox_b)
@@ -143,6 +143,61 @@ class ImageProcessorV11:
     # -- 联合轮廓分析 ----------------------------------------------------
 
     @staticmethod
+    def mask_centerline_angle(mask_a, mask_b, bbox_a=None, bbox_b=None):
+        """中轴线独立校正：正/反面 mask 逐行中点 → Theil-Sen → 3σ 剔除 → 重算。
+
+        PA/PB 已排除杆子区域（由 _joint_detect trim 保证）。
+        不旋转、不重叠搜索——中轴对旋转噪声免疫，比像素重叠稳定。
+        """
+        PA, PB = ImageProcessorV11._prepare_aligned(mask_a, mask_b, bbox_a, bbox_b)
+
+        def _tilt(mask, n_rounds=2):
+            """Theil-Sen 中轴角 + 3σ 异常行剔除（n_rounds 次迭代）。"""
+            mask_bool = mask > 0.5
+            for _ in range(n_rounds):
+                # 逐行中点
+                mid = {}
+                h, w = mask_bool.shape
+                for y in range(h):
+                    cols = np.where(mask_bool[y])[0]
+                    if len(cols) >= 5:
+                        mid[y] = (cols[0] + cols[-1]) * 0.5
+                if len(mid) < 20:
+                    return 0.0
+                my = np.array(list(mid.keys()), dtype=float)
+                mx = np.array([mid[int(y)] for y in my], dtype=float)
+                # Theil-Sen
+                n = len(my); g = max(1, n // 3)
+                slopes = []
+                for i in range(0, n - g, max(1, n // 100)):
+                    dy = my[i + g] - my[i]
+                    if dy > 0:
+                        slopes.append((mx[i + g] - mx[i]) / dy)
+                if not slopes:
+                    return 0.0
+                a = float(np.median(slopes))
+                # 3σ 异常行剔除：只保留残差在 3σ 内的行
+                ym = my.mean(); xm = mx.mean()
+                res = np.abs(mx - (xm + a * (my - ym)))
+                threshold = res.std() * 3.0
+                keep = res <= threshold
+                if keep.sum() < 20 or keep.all():
+                    break
+                # 重建 mask_bool，只保留内点行
+                bad_ys = set(int(my[i]) for i in range(n) if not keep[i])
+                new_mask = mask_bool.copy()
+                for by in bad_ys:
+                    if 0 <= by < h:
+                        new_mask[by, :] = False
+                mask_bool = new_mask
+            return np.degrees(np.arctan(a))
+
+        a_correction = _tilt(PA)
+        b_correction = _tilt(PB)  # PB 已翻转，tilt 在翻转坐标系
+        # 翻转反转方向：原背面校正 = -tilt(flipped)
+        return round(-a_correction * 2) / 2, round(b_correction * 2) / 2
+
+    @staticmethod
     def _vertical_profile(mask_arr):
         h = mask_arr.shape[0]
         ys, ls, rs = [], [], []
@@ -181,11 +236,7 @@ class ImageProcessorV11:
                 min(mask_arr.shape[1], int(c.max())), yi + int(r.max()))
 
     def _joint_detect(self, img_a, img_b):
-        """v11: 单管道 rembg bbox + 联合轮廓共识匹配 + 杆子底部裁剪。
-
-        每张图只跑一次 rembg（_single_pipe 同时返回 bbox + mask），
-        共识区间直接作为最终 bbox，不做 trim-only 约束。
-        """
+        """Returns (bbox_a, bbox_b, mask_a, mask_b) — masks kept for angle detection."""
         bbox_a, mask_a = self._single_pipe(img_a)
         bbox_b, mask_b = self._single_pipe(img_b)
 
@@ -216,13 +267,13 @@ class ImageProcessorV11:
                     if j_bbox_b:
                         bbox_b = j_bbox_b
 
-        # v11.1: 杆子底部裁剪 — 用原图色彩区分服装 vs 人台/杆子
+        # v11.1: 杆子底部裁剪
         if bbox_a:
             bbox_a = self._trim_rod_bottom(img_a, mask_a, bbox_a)
         if bbox_b:
             bbox_b = self._trim_rod_bottom(img_b, mask_b, bbox_b)
 
-        return bbox_a, bbox_b
+        return bbox_a, bbox_b, mask_a, mask_b
 
     def _joint_detect_debug(self, img_a, img_b):
         """联合检测 + 收集每一步的调试图像。
@@ -235,11 +286,11 @@ class ImageProcessorV11:
         bbox_a, mask_a = self._single_pipe(img_a)
         bbox_b, mask_b = self._single_pipe(img_b)
 
-        # 1. AI 分割：rembg (u2net) → Mask
+        # 1. AI 分割：rembg (u2net) -> Mask
         debug.append(("① AI分割(rembg) A", self._debug_mask_overlay(img_a, mask_a)))
         debug.append(("① AI分割(rembg) B", self._debug_mask_overlay(img_b, mask_b)))
 
-        # 2. Mask → BBox
+        # 2. Mask -> BBox
         if bbox_a:
             debug.append(("② 初步BBox A", self._debug_bbox_overlay(img_a, bbox_a, color=(255, 165, 0))))
         if bbox_b:
@@ -271,7 +322,6 @@ class ImageProcessorV11:
                 if cy_max - cy_min >= 50:
                     j_bbox_a = self._bbox_in_range(mask_a, cy_min, cy_max)
                     j_bbox_b = self._bbox_in_range(mask_b, cy_min, cy_max)
-                    # 快照 consensus 提炼前 → 后对比
                     if j_bbox_a:
                         debug.append(("④ CV共识提炼(橙=前绿=后) A",
                                       self._debug_rod_compare(img_a, bbox_a, j_bbox_a)))
@@ -293,11 +343,23 @@ class ImageProcessorV11:
                 debug.append(("⑤ CV杆子裁剪(橙=前绿=后) B", self._debug_rod_compare(img_b, bbox_b, rod_bbox_b)))
             bbox_b = rod_bbox_b
 
-        # 6. 最终 bbox
+        # 6. Theil-Sen 中轴线 — 逐行中点 + 3sigma 剔除
+        angle_a = angle_b = 0.0
+        if bbox_a and bbox_b:
+            angle_a, angle_b = ImageProcessorV11.mask_centerline_angle(
+                mask_a, mask_b, bbox_a, bbox_b)
+        if bbox_a and mask_a is not None:
+            debug.append((f"⑥ Theil-Sen中轴线 A (校正={angle_a:+.1f}°) green=fitted red=vertical yellow=midpoint",
+                          ImageProcessorV11._debug_ts_chart(img_a, mask_a, bbox_a, -angle_a)))
+        if bbox_b and mask_b is not None:
+            debug.append((f"⑥ Theil-Sen中轴线 B (校正={angle_b:+.1f}°) green=fitted red=vertical yellow=midpoint",
+                          ImageProcessorV11._debug_ts_chart(img_b, mask_b, bbox_b, angle_b)))
+
+        # 7. 最终 bbox
         if bbox_a:
-            debug.append(("⑥ 最终结果 A", self._debug_bbox_overlay(img_a, bbox_a, color=(0, 255, 0))))
+            debug.append(("⑦ 最终结果 A", self._debug_bbox_overlay(img_a, bbox_a, color=(0, 255, 0))))
         if bbox_b:
-            debug.append(("⑥ 最终结果 B", self._debug_bbox_overlay(img_b, bbox_b, color=(0, 255, 0))))
+            debug.append(("⑦ 最终结果 B", self._debug_bbox_overlay(img_b, bbox_b, color=(0, 255, 0))))
 
         return bbox_a, bbox_b, debug
 
@@ -358,7 +420,7 @@ class ImageProcessorV11:
         draw = ImageDraw.Draw(img)
 
         try:
-            font_s = ImageFont.truetype("msyh.ttc", 11)   # 微软雅黑
+            font_s = ImageFont.truetype("msyh.ttc", 11)
         except Exception:
             try:
                 font_s = ImageFont.truetype("simhei.ttf", 11)
@@ -405,31 +467,111 @@ class ImageProcessorV11:
             draw.line([thr_x, yy, thr_x, min(yy + 6, pad_t + ph)],
                       fill=(255, 230, 80), width=1)
 
-        # axis: Y 轴刻度标记
-        y_top = pad_t; y_bot = pad_t + ph
+        # Y 轴刻度标记
         for frac in [0, 0.25, 0.5, 0.75, 1.0]:
-            yy = y_top + int(ph * frac)
+            yy = pad_t + int(ph * frac)
             draw.line([pad_l - 4, yy, pad_l, yy], fill=(150, 150, 150))
 
-        # ── 图例 ──
+        # 图例
         lx, ly = pad_l + 8, 8
-        # 蓝色块 + "正面宽度"
         draw.rectangle([lx, ly, lx + 14, ly + 10], fill=(60, 140, 255))
-        draw.text((lx + 18, ly - 1), "正面服装宽度(px)", fill=(180, 180, 180), font=font_s)
-        # 红色块
+        draw.text((lx + 18, ly - 1), "front width(px)", fill=(180, 180, 180), font=font_s)
         draw.rectangle([lx + 160, ly, lx + 174, ly + 10], fill=(255, 90, 90))
-        draw.text((lx + 178, ly - 1), "反面服装宽度(px)", fill=(180, 180, 180), font=font_s)
-        # 黄色块
+        draw.text((lx + 178, ly - 1), "back width(px)", fill=(180, 180, 180), font=font_s)
         draw.rectangle([lx + 340, ly, lx + 354, ly + 10], fill=(255, 230, 80))
-        draw.text((lx + 358, ly - 1), "宽度比 max/min", fill=(180, 180, 180), font=font_s)
-        # 阈值
+        draw.text((lx + 358, ly - 1), "width ratio max/min", fill=(180, 180, 180), font=font_s)
         draw.text((lx + 490, ly - 1),
-                  f"共识阈值={CONSENSUS_RATIO_THRESHOLD}", fill=(255, 230, 80), font=font_s)
-        # 绿色 = 共识区间
+                  f"threshold={CONSENSUS_RATIO_THRESHOLD}", fill=(255, 230, 80), font=font_s)
         draw.rectangle([lx, ly + 14, lx + 14, ly + 24], fill=(35, 65, 35))
-        draw.text((lx + 18, ly + 13), "共识区间 (宽度比<1.35)", fill=(180, 180, 180), font=font_s)
+        draw.text((lx + 18, ly + 13), "consensus (ratio<1.35)", fill=(180, 180, 180), font=font_s)
 
         return img
+
+    @staticmethod
+    def _prepare_aligned(mask_a, mask_b, bbox_a, bbox_b):
+        """为 mask_a 和 mask_b 做 crop+flip+pad，返回 (PA, PB)。"""
+        def _crop_pad(mask, bbox):
+            if bbox:
+                x1, y1, x2, y2 = [int(v) for v in bbox]
+                bw, bh = x2 - x1, y2 - y1
+                px, py = int(bw * 0.15), int(bh * 0.15)
+                x1 = max(0, x1 - px); x2 = min(mask.shape[1], x2 + px)
+                y1 = max(0, y1 - py); y2 = min(mask.shape[0], y2 + py)
+                return mask[y1:y2, x1:x2]
+            return mask
+        ma = _crop_pad(mask_a, bbox_a)
+        mb = _crop_pad(mask_b, bbox_b)
+        flipped = mb[:, ::-1]
+        target_h = 400
+        sa = max(1, ma.shape[0] // target_h)
+        sb = max(1, flipped.shape[0] // target_h)
+        small_a = (ma[::sa, ::sa] > 30)
+        small_f = (flipped[::sb, ::sb] > 30)
+        H = max(small_a.shape[0], small_f.shape[0])
+        W = max(small_a.shape[1], small_f.shape[1])
+        pad_h, pad_w = H // 2, W // 2
+        HH, WW = H + pad_h * 2, W + pad_w * 2
+        PA = np.zeros((HH, WW), dtype=np.float32)
+        PB = np.zeros((HH, WW), dtype=np.float32)
+        dya = (HH - small_a.shape[0]) // 2; dxa = (WW - small_a.shape[1]) // 2
+        dyb = (HH - small_f.shape[0]) // 2; dxb = (WW - small_f.shape[1]) // 2
+        PA[dya:dya + small_a.shape[0], dxa:dxa + small_a.shape[1]] = small_a.astype(np.float32)
+        PB[dyb:dyb + small_f.shape[0], dxb:dxb + small_f.shape[1]] = small_f.astype(np.float32)
+        return PA, PB
+
+    @staticmethod
+    def _debug_ts_chart(img, mask_arr, bbox, angle_deg):
+        """Theil-Sen: mask(绿) + 内点(黄) + 剔除点(蓝) + 拟合线(绿) + 垂直(红)。"""
+        from PIL import ImageDraw
+        x1, y1, x2, y2 = [int(v) for v in bbox]
+        if x2 <= x1 or y2 <= y1 or angle_deg == 0:
+            return ImageProcessorV11._debug_bbox_overlay(img, bbox, color=(0, 255, 0))
+        w_c, h_c = x2 - x1, y2 - y1
+        dw, dh = 500, max(1, int(500 * h_c / w_c))
+        sx, sy = dw / max(w_c, 1), dh / max(h_c, 1)
+        crop = img.crop((x1, y1, x2, y2)).convert('RGBA')
+        arr = np.array(crop)
+        for yi in range(h_c):
+            cols = np.where(mask_arr[y1 + yi] > 30)[0]
+            if cols.size >= 5:
+                xl, xr = max(0, cols[0] - x1), min(w_c, cols[-1] - x1 + 1)
+                arr[yi, int(xl):int(xr), :] = ((arr[yi, int(xl):int(xr), :].astype(np.uint16) * 0.6 +
+                    np.array([0, 160, 0, 255], dtype=np.uint16) * 0.4).clip(0, 255).astype(np.uint8))
+        out = Image.fromarray(arr, 'RGBA').convert('RGB').resize((dw, dh), Image.LANCZOS)
+        draw = ImageDraw.Draw(out)
+        mid_pts = [(float((c2[0] + c2[-1]) * 0.5), float(yi)) for yi in range(y1, y2)
+                   if len(c2 := np.where(mask_arr[yi] > 30)[0]) >= 5]
+        if len(mid_pts) < 20:
+            return out
+        mx = np.array([p[0] for p in mid_pts]); my = np.array([p[1] for p in mid_pts])
+        n = len(my); g = max(1, n // 3)
+        slopes = [(mx[i+g]-mx[i])/(my[i+g]-my[i]) for i in range(0, n-g, max(1, n//100)) if my[i+g] > my[i]]
+        a = float(np.median(slopes)) if slopes else 0.0
+        ym, xm = my.mean(), mx.mean()
+        res = np.abs(mx - (xm + a * (my - ym)))
+        thresh = res.std() * 3.0
+        keep = res <= thresh
+        step = max(1, n // 80)
+        for i in range(0, n, step):
+            px, py = int((mid_pts[i][0] - x1) * sx), int((mid_pts[i][1] - y1) * sy)
+            c = (255, 255, 100) if keep[i] else (100, 140, 255)
+            r = 3 if keep[i] else 2
+            draw.ellipse([px - r, py - r, px + r, py + r], fill=c)
+        ix, iy = mx[keep], my[keep]
+        if len(ix) >= 20:
+            ym2, xm2 = iy.mean(), ix.mean()
+            a_f = np.tan(np.radians(angle_deg))
+            ty, by = iy[0], iy[-1]
+            draw.line([int((xm2 + a_f*(ty-ym2) - x1)*sx), int((ty - y1)*sy),
+                       int((xm2 + a_f*(by-ym2) - x1)*sx), int((by - y1)*sy)],
+                      fill=(0, 255, 200), width=2)
+        cx_mid = (x1 + x2) / 2
+        draw.line([int((cx_mid - x1)*sx), 0, int((cx_mid - x1)*sx), dh], fill=(255, 80, 80), width=1)
+        n_in, n_out = int(keep.sum()), n - int(keep.sum())
+        draw.text((4, 2), f'TS: {angle_deg:+.1f} in={n_in}/{n} out={n_out} 3sig={thresh:.0f}px yellow=kept blue=rej green=fitted red=vertical', fill=(255, 255, 255))
+        return out
+
+
 
     def _trim_rod_bottom(self, img, mask_arr, bbox):
         """基于 mask 宽度占比裁剪杆子/人台底部。
