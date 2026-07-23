@@ -2,9 +2,9 @@
 流程：选文件夹 → AI+CV 流式处理（完成一对立即可审）
 左预览 + 右编辑 + 角度旋钮
 """
-import sys, os
-# PyInstaller 打包时，优先用捆绑的 u2net.onnx 模型
-# PyInstaller onefile 会把文件解压到 sys._MEIPASS，模型在那里
+import sys, os, threading
+# onedir 安装：模型在安装目录 _internal/models/ 下，设置 U2NET_HOME 让 rembg 直接读取
+# 开发模式（python reviewer.py）：默认从 ~/.u2net/ 加载
 _EXE_DIR = sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(__file__)
 _BUNDLED_MODEL = os.path.join(_EXE_DIR, 'models', 'u2net.onnx')
 if os.path.exists(_BUNDLED_MODEL):
@@ -12,7 +12,7 @@ if os.path.exists(_BUNDLED_MODEL):
 
 import json
 import math
-import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from typing import Optional
@@ -374,19 +374,20 @@ class ReviewerApp(ctk.CTk):
         self.update_idletasks()
         if self._preview_placeholder:
             self._draw_preview_placeholder()
+        self._t0 = time.time()
         self._status_loader.configure(text="模型加载中...")
         self.processor.prewarm()
         self.after(200, self._check_prewarm)
 
     def _check_prewarm(self):
         try:
-            if getattr(self.processor, '_warmed', True):
-                self._status_loader.configure(text="模型就绪")
-                self.after(3000, lambda: self._status_loader.configure(text=""))
-            else:
-                self.after(200, self._check_prewarm)
-        except tk.TclError:
-            pass  # 窗口已销毁
+            if getattr(self.processor, '_warmed', False):
+                elapsed = time.time() - self._t0
+                self._status_loader.configure(text=f"模型就绪 ({elapsed:.1f}s)")
+                return
+            self.after(200, self._check_prewarm)
+        except Exception:
+            self.after(200, self._check_prewarm)
 
     # ── UI ────────────────────────────────────────────────────
 
@@ -432,7 +433,11 @@ class ReviewerApp(ctk.CTk):
             self._lbl_logo.pack(side="right", padx=(4, 2))
             self._lbl_logo.bind("<Button-1>", self._show_about)
         else:
-            self._lbl_logo = None
+            self._lbl_logo = tk.Label(bar, text="关于", fg="#999",
+                                      bg=ctk.ThemeManager.theme["CTkFrame"]["fg_color"][1],
+                                      font=ctk.CTkFont(size=10), cursor="hand2")
+            self._lbl_logo.pack(side="right", padx=(4, 2))
+            self._lbl_logo.bind("<Button-1>", self._show_about)
 
         self.lbl_fname = ctk.CTkLabel(bar, text="", font=ctk.CTkFont(size=9), text_color="#999")
         self.lbl_fname.pack(side="right", padx=8)
@@ -504,6 +509,7 @@ class ReviewerApp(ctk.CTk):
         self.bind("<f>", lambda e: self._fit_editors()); self.bind("<F>", lambda e: self._fit_editors())
         self.bind("<x>", lambda e: self._swap_fb()); self.bind("<X>", lambda e: self._swap_fb())
         self.bind("<r>", lambda e: self._reset_rotation()); self.bind("<R>", lambda e: self._reset_rotation())
+        self.bind("<F1>", lambda e: self._show_about())
         # 句号逗号微调角度
         self.bind("<comma>", lambda e: self._adj_angle('a', -0.5))
         self.bind("<period>", lambda e: self._adj_angle('a', +0.5))
@@ -588,10 +594,11 @@ class ReviewerApp(ctk.CTk):
             for a in data.get("annotations", []):
                 self.annotations[a["file"]] = a
 
-        # auto_load 模式：标注覆盖全 → 秒开；不覆盖 → 跑 AI
-        # 手动点击「AI 处理」→ 永远跑 AI（auto_load=False）
+        # auto_load 模式：浏览文件夹时静默加载已有标注
+        # 标注覆盖全 → 秒开，不覆盖全 → 等待用户点击「AI 处理」
         if auto_load:
             paired_names = {p[0].name for p in self.pairs} | {p[1].name for p in self.pairs}
+            covered = paired_names & set(self.annotations.keys())
             if paired_names <= set(self.annotations.keys()):
                 self._proc_total = len(self.pairs)
                 self._proc_done = self._proc_total
@@ -603,6 +610,24 @@ class ReviewerApp(ctk.CTk):
                 self.btn_prev.configure(state="disabled")
                 self.btn_next.configure(state="normal" if self._proc_done > 1 else "disabled")
                 self.status.configure(text=f"已加载 {self._proc_total} 对标注")
+                return
+            else:
+                # 标注不完整或为空：只加载已有标注，不跑 AI
+                missing = len(paired_names) - len(covered)
+                self._proc_total = len(self.pairs)
+                self._proc_done = 0
+                self._results = [None] * self._proc_total
+                self._first_loaded = False
+                self.pair_idx = 0
+                self.btn_prev.configure(state="disabled")
+                self.btn_next.configure(state="disabled")
+                self.lbl_idx.configure(text="0 / 0")
+                if covered:
+                    self.status.configure(
+                        text=f"已加载 {len(covered)}/{len(paired_names)} 对标注，"
+                             f"剩余 {missing} 对请点击「AI 处理」补全")
+                else:
+                    self.status.configure(text="已有标注文件但未匹配当前图片，点击「AI 处理」重新检测")
                 return
         else:
             # 手动点击：丢弃标注，强制重跑
@@ -618,12 +643,24 @@ class ReviewerApp(ctk.CTk):
         self.btn_next.configure(state="disabled")
         self.lbl_idx.configure(text="0 / 0")
         self.status.configure(text=f"AI+CV 处理中... 0/{self._proc_total}")
-        self._status_loader.configure(text="")
+        self._status_loader.configure(text="AI 处理中...")
 
         self._processing = True
         n = self._proc_total
 
         def worker():
+            # 在本线程用第一张真实图片跑一次预热推理，触发 ONNX 的所有惰性初始化。
+            # 不能用 32×32 小图——ONNX 对小图和大图走不同的内存规划/kernel，
+            # 小图预热后的内存缓冲区在真实图片面前要重新分配，等于没预热。
+            if not getattr(self.processor, '_warmed_up', False):
+                try:
+                    pa0, _ = self.pairs[0]
+                    img0 = ImageOps.exif_transpose(Image.open(pa0)).convert("RGB")
+                    self.processor._single_pipe(img0)
+                except Exception:
+                    pass
+                self.processor._warmed_up = True
+
             try:
                 for i, (pa, pb) in enumerate(self.pairs):
                     try:
@@ -656,6 +693,7 @@ class ReviewerApp(ctk.CTk):
         self._proc_done = self._proc_total
         self._save_ai_results()  # AI 完成后写入 annotations.json
         self.status.configure(text=f"全部完成 — {self._proc_total} 对已就绪")
+        self._status_loader.configure(text="AI 就绪")
         self._update_nav_buttons()
 
     def _save_ai_results(self):
@@ -1007,7 +1045,10 @@ class ReviewerApp(ctk.CTk):
         logo_about_png = Path(__file__).parent / "logo_about.png"
         if logo_about_png.exists():
             logo = ImageTk.PhotoImage(Image.open(str(logo_about_png)))
-        AboutWindow(self, logo)
+        w = AboutWindow(self, logo)
+        w.transient(self)
+        w.grab_set()
+        w.lift()
 
 
 class AboutWindow(tk.Toplevel):
@@ -1016,24 +1057,25 @@ class AboutWindow(tk.Toplevel):
     def __init__(self, parent, logo):
         super().__init__(parent)
         self.title("关于")
-        self.geometry("780x300")
+        self.geometry("780x400")
         self.configure(bg="#1E1E1E")
         self.resizable(False, False)
+        self.transient(parent)
 
         if logo:
             lbl = tk.Label(self, image=logo, bg="#1E1E1E")
-            lbl.image = logo  # 防止 GC
-            lbl.pack(pady=(30, 12))
+            lbl.image = logo
+            lbl.pack(pady=(30, 8))
 
         info = tk.Label(self,
                         text="Garment Front-Back Stitcher\n"
                              "服装样品正反面 AI+CV 拼接工具\n\n"
-                             "技术栈： rembg · customtkinter · Pillow · NumPy/SciPy\n\n"
-                             "完全离线运行，无需网络",
+                             "技术栈： rembg / onnxruntime / NumPy / SciPy / Pillow\n"
+                             "桌面框架： customtkinter + tkinter",
                         bg="#1E1E1E", fg="#CCC",
                         font=("Microsoft YaHei UI", 11),
                         justify="center")
-        info.pack(pady=(8, 20))
+        info.pack(pady=(4, 20))
 
 
 class DebugWindow(tk.Toplevel):

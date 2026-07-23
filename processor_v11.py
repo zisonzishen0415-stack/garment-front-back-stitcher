@@ -7,6 +7,7 @@
 - 无 PAIR_HEIGHT_RATIO_MAX
 """
 
+import threading
 from pathlib import Path
 from typing import Optional
 import numpy as np
@@ -27,20 +28,32 @@ class ImageProcessorV11:
 
     def __init__(self):
         self._session = None
+        self._session_lock = threading.Lock()
 
     def _get_session(self):
+        """线程安全地返回 rembg session。使用 double-check 锁确保只创建一次。"""
         if self._session is None:
-            from rembg import new_session
-            self._session = new_session()
+            with self._session_lock:
+                if self._session is None:
+                    from rembg import new_session
+                    self._session = new_session()
         return self._session
 
     def prewarm(self):
-        """启动后台线程加载 u2net 模型。完成后设置 _warmed 标志。"""
+        """后台线程加载 u2net 模型权重到内存。
+
+        _warmed 在 try/finally 中设置，确保即使加载失败也不会导致轮询死循环。
+        失败时 _warmed 仍为 True（只是 session 为 None），
+        工作线程会在首次推理时重新创建 session。
+        """
         self._warmed = False
-        import threading
         def _load():
-            self._get_session()
-            self._warmed = True
+            try:
+                self._get_session()
+            except Exception:
+                pass  # 加载失败，工作线程稍后重试
+            finally:
+                self._warmed = True
         threading.Thread(target=_load, daemon=True).start()
 
     # -- 公共入口 --------------------------------------------------------

@@ -152,15 +152,17 @@ annotations.json 存在且完整？
 
 | 组件 | 用途 |
 |------|------|
-| **rembg** (u2net.onnx) | AI 前景分割，输出 mask |
+| **rembg** (u2net.onnx) | AI 前景分割，底层使用 onnxruntime 推理 |
+| **onnxruntime** | ONNX 模型推理引擎 |
 | **Pillow** | 图像读取/裁切/旋转/拼接/EXIF |
 | **NumPy** | mask 数组运算、垂直轮廓扫描 |
 | **SciPy** | 液化变形网格插值 (scipy.ndimage.map_coordinates) |
 | **customtkinter + tkinter** | 桌面 GUI |
 | **svglib / svgpathtools** | SVG logo 渲染 |
-| **PyInstaller** | 打包为单文件 EXE |
+| **PyInstaller** | 打包为 onedir 安装包 |
 
-完全离线运行，首次自动下载 u2net.onnx (168MB)，后续无需网络。
+完全离线运行，模型 (168MB) 内置于安装包，无需联网下载。
+
 
 ---
 
@@ -207,19 +209,22 @@ python -m PyInstaller garment-stitcher.spec
 安装后目录结构：
 ```
 C:\Program Files\GarmentStitcher\
-├── GarmentStitcher.exe      # 主程序
-├── uninstall.exe             # 卸载程序
-├── models\u2net.onnx         # AI 模型
-├── logo.ico / logo_*.png     # 品牌图标
-└── ...（Python 运行时 + 依赖库）
+├── GarmentStitcher.exe        # 主程序（17MB 引导程序）
+├── _internal\                 # Python 运行时 + 依赖 + AI 模型
+│   ├── models\u2net.onnx      # rembg AI 模型 (168MB)
+│   ├── logo.ico / logo_*.png  # 品牌图标
+│   ├── python312.dll          # Python 解释器
+│   └── ...（所有依赖库）
+└── uninstall.exe              # 卸载程序
 ```
 
 开始菜单 + 桌面快捷方式，控制面板可卸载。
 
 启动后预设行为：
 
-- 窗口打开 → 后台加载 u2net 模型（状态栏显示「模型加载中...」）
-- 浏览有 `annotations.json` 的文件夹 → 秒加载，直接开始审核
+- 窗口打开 → 后台加载 u2net 模型（状态栏黄色显示「模型加载中…」→「模型就绪」）
+- 浏览有 `annotations.json` 且覆盖全部图片的文件夹 → 秒加载，直接开始审核
+- 浏览有 `annotations.json` 但只覆盖部分图片的文件夹 → 加载已有标注，提示剩余多少对需处理
 - 浏览新文件夹 → 提示点击「AI 处理」开始推理
 
 ---

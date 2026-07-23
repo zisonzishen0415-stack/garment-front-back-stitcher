@@ -1,15 +1,22 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller onedir build config (for NSIS installer)
-Usage:
+
+Prerequisites:
+  pip install pyinstaller
   python build_icon.py
   mkdir models && cp ~/.u2net/u2net.onnx models/
+
+Build:
   python -m PyInstaller garment-stitcher.spec
+  → dist/GarmentStitcher/  (onedir, model bundled in _internal/models/)
+
+Pack installer (requires NSIS: winget install NSIS.NSIS):
   makensis installer.nsi
-Output: dist/GarmentStitcher_Setup.exe
+  → dist/GarmentStitcher_Setup.exe
 """
 from pathlib import Path
 
-PROJECT = Path(SPECPATH).parent
+PROJECT = Path(SPECPATH)
 
 _datas = [
     ('logo.ico', '.'),
@@ -17,7 +24,12 @@ _datas = [
     ('logo_about.png', '.'),
     ('logo_placeholder.png', '.'),
 ]
+
+# rembg u2net 模型（168MB）—— 构建前确保 models/u2net.onnx 存在
 _u2net = PROJECT / 'models' / 'u2net.onnx'
+if not _u2net.exists():
+    raise SystemExit(f"模型文件不存在: {_u2net}\n请先运行: mkdir models && cp ~/.u2net/u2net.onnx models/")
+_datas.append((str(_u2net), 'models'))
 
 a = Analysis(
     ['reviewer.py'],
@@ -46,9 +58,8 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=None)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
     [],
+    exclude_binaries=True,
     name='GarmentStitcher',
     debug=False,
     bootloader_ignore_signals=False,
