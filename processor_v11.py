@@ -108,10 +108,10 @@ class ImageProcessorV11:
     # -- rembg 单管道 ----------------------------------------------------
 
     def _single_pipe(self, img: Image.Image) -> tuple[Optional[tuple[int, int, int, int]], np.ndarray]:
-        """单管道：对比度增强 → rembg → 杆子/支架色彩过滤 → (bbox, mask)。
+        """单管道：对比度增强 → rembg → (bbox, mask)。
 
-        rembg 对纯白服装易把金属杆误检为服装。rembg 后用 HSV 滤除
-        mask 前景中的深灰 / 低饱和像素（金属杆/支架的典型特征）。
+        v11 用对比度增强做 rembg，对暗色衣物/人台分离效果较好。
+        一次 rembg 推理同时产出 bbox 和 mask，避免重复调用。
         """
         enhanced = ImageEnhance.Contrast(img).enhance(1.4)
         from rembg import remove
@@ -123,12 +123,6 @@ class ImageProcessorV11:
             else:
                 mask = mask.resize((w, h), Image.LANCZOS)
         mask_arr = np.array(mask)
-
-        # 杆子/支架色彩过滤：深灰+低饱和 → 从 mask 前景中扣除
-        hsv = np.array(img.convert("HSV"), dtype=np.float32)
-        rod_mask = (hsv[..., 1] < 50) & (hsv[..., 2] < 160)  # 低饱和 + 中低亮度
-        mask_arr[(mask_arr > 30) & rod_mask] = 0
-
         rows, cols = np.where(mask_arr > 30)
         if len(rows) < 100:
             return None, mask_arr
