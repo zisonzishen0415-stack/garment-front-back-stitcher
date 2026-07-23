@@ -143,11 +143,152 @@ class ImageProcessorV11:
     # -- 联合轮廓分析 ----------------------------------------------------
 
     @staticmethod
-    def mask_centerline_angle(mask_a, mask_b, bbox_a=None, bbox_b=None):
-        """Theil-Sen + 3σ 剔除 — bbox 内逐行中点拟合，删异常行重算。"""
+    def mask_centerline_angle(mask_a, mask_b, bbox_a=None, bbox_b=None, debug_cb=None):
+        """模板对齐法（5步）。如果 debug_cb(label, img) 传入则每步回调可视化。
+
+        1. 双面 ±0.5°×0.1° 网格搜索，像素重叠最大化 → (angle_a, angle_b)
+        2. 模板 = 正面(a) ∩ 翻背面(b) → 共识服装轮廓
+        3. 模板 Theil-Sen 中轴倾角 → 摆正模板
+        4. 正面独立搜索：与正模板重叠最大的角 → angle_a
+        5. 翻背面独立搜索：与正模板重叠最大的角 → angle_b
+
+        返回 (angle_a, angle_b)，精度 0.1°。
+        """
+        PA, PB = ImageProcessorV11._prepare_aligned(mask_a, mask_b, bbox_a, bbox_b)
+
+        def _rot(mask_bool, deg):
+            h, w = mask_bool.shape
+            if abs(deg) < 0.005:
+                return (mask_bool > 0.5).astype(np.float32)
+            rad = np.radians(deg); c = np.cos(rad); sx = np.sin(rad)
+            cx, cy = w / 2.0, h / 2.0
+            ys, xs = np.where(mask_bool > 0.5)
+            nx = np.round((xs - cx) * c - (ys - cy) * sx + cx).astype(int)
+            ny = np.round((xs - cx) * sx + (ys - cy) * c + cy).astype(int)
+            pl, pr = max(0, -nx.min()), max(0, nx.max() - w + 1)
+            pt, pb = max(0, -ny.min()), max(0, ny.max() - h + 1)
+            out = np.zeros((h + pt + pb, w + pl + pr), dtype=np.float32)
+            out[ny + pt, nx + pl] = 1.0
+            return out
+
+        def _overlap(m1, m2):
+            h = min(m1.shape[0], m2.shape[0])
+            w = min(m1.shape[1], m2.shape[1])
+            return int((m1[:h, :w] * m2[:h, :w]).sum())
+
+        def _tilt(mask):
+            ys, xs = np.where(mask > 0.5)
+            if len(ys) < 30: return 0.0
+            mid = {}
+            for y in np.unique(ys):
+                row = xs[ys == y]
+                if len(row) >= 5: mid[y] = (row[0] + row[-1]) * 0.5
+            if len(mid) < 20: return 0.0
+            my = np.array(list(mid.keys()), dtype=float)
+            mx = np.array([mid[int(y)] for y in my], dtype=float)
+            n = len(my); g = max(1, n // 3); slopes = []
+            for i in range(0, n - g, max(1, n // 100)):
+                dy = my[i + g] - my[i]
+                if dy > 0: slopes.append((mx[i + g] - mx[i]) / dy)
+            return np.degrees(np.arctan(float(np.median(slopes)))) if slopes else 0.0
+
+        # === Step 1: 双面网格搜索 ===
+        fa = (PA > 0.5).astype(np.float32)
+        fb = (PB > 0.5).astype(np.float32)
+        baseline = _overlap(fa, fb)
+        angles = np.arange(-0.5, 0.51, 0.1)
+        best_a = 0.0; best_b = 0.0; best_ov = baseline
+        # collect grid for debug heatmap
+        score_grid = np.zeros((len(angles), len(angles)), dtype=int)
+
+        for ai, a in enumerate(angles):
+            ra = _rot(PA > 0.5, a)
+            for bi, b in enumerate(angles):
+                rb = _rot(PB > 0.5, b)
+                ov = _overlap(ra, rb)
+                score_grid[ai, bi] = ov
+                if ov > best_ov:
+                    best_ov = ov; best_a = float(a); best_b = float(b)
+
+        if best_ov <= baseline:
+            return 0.0, 0.0
+
+        # Debug: step 1 heatmap
+        if debug_cb:
+            debug_cb(f"S1 网格搜索 (best A:{best_a:+.1f} B:{best_b:+.1f} ov:{best_ov}) baseline={baseline}",
+                     ImageProcessorV11._debug_score_grid(angles, score_grid, best_a, best_b))
+
+        # === Step 2: 模板 ===
+        ra_opt = _rot(PA > 0.5, best_a)
+        rb_opt = _rot(PB > 0.5, best_b)
+        h_t = min(ra_opt.shape[0], rb_opt.shape[0])
+        w_t = min(ra_opt.shape[1], rb_opt.shape[1])
+        tpl = ((ra_opt[:h_t, :w_t] > 0.5) & (rb_opt[:h_t, :w_t] > 0.5)).astype(np.float32)
+        if int(tpl.sum()) < 50:
+            return 0.0, 0.0
+
+        # Debug: step 2 alignment + step 3 template
+        if debug_cb:
+            debug_cb(f"S2 对齐重叠 (A:{best_a:+.1f} B:{best_b:+.1f}) green=front blue=flipped_back yellow=overlap",
+                     ImageProcessorV11._debug_mirror_overlay(ra_opt, rb_opt, best_a, best_b))
+            debug_cb(f"S3 模板mask (交集={int(tpl.sum())}px) yellow=template green=front_only blue=back_only",
+                     ImageProcessorV11._debug_template_only(ra_opt[:h_t, :w_t], rb_opt[:h_t, :w_t], tpl))
+
+        # === Step 3: 摆正模板 ===
+            for b in angles:
+                rb = _rot(PB > 0.5, b)
+                ov = _overlap(ra, rb)
+                if ov > best_ov: best_ov = ov; best_a = float(a); best_b = float(b)
+
+        if best_ov <= baseline:
+            return 0.0, 0.0
+
+        # --- Step 2: 模板 = 最优角下的交集 ---
+        ra_opt = _rot(PA > 0.5, best_a)
+        rb_opt = _rot(PB > 0.5, best_b)
+        h_t = min(ra_opt.shape[0], rb_opt.shape[0])
+        w_t = min(ra_opt.shape[1], rb_opt.shape[1])
+        tpl = ((ra_opt[:h_t, :w_t] > 0.5) & (rb_opt[:h_t, :w_t] > 0.5)).astype(np.float32)
+        if int(tpl.sum()) < 50:
+            return 0.0, 0.0
+
+        # --- Step 3: 模板中轴倾角 → 摆正 ---
+        tpl_tilt = _tilt(tpl)
+        tpl_up = _rot(tpl > 0.5, -tpl_tilt) if abs(tpl_tilt) >= 0.05 else tpl
+
+        if debug_cb:
+            debug_cb(f"S4 摆正模板 (tilt={tpl_tilt:+.1f}°) 黄色=摆正后的模板mask",
+                     ImageProcessorV11._debug_upright_template(tpl_up))
+
+        # --- Step 4: 正面独立搜索（与正模板重叠最大）---
+        a_curve = []
+        a_best = 0.0; a_max = 0
+        for a in angles:
+            s = _overlap(_rot(PA > 0.5, a), tpl_up)
+            a_curve.append((float(a), s))
+            if s > a_max: a_max = s; a_best = float(a)
+
+        # --- Step 5: 翻背面独立搜索（与正模板重叠最大）---
+        b_curve = []
+        b_best = 0.0; b_max = 0
+        for b in angles:
+            s = _overlap(_rot(PB > 0.5, b), tpl_up)
+            b_curve.append((float(b), s))
+            if s > b_max: b_max = s; b_best = float(b)
+
+        if debug_cb:
+            debug_cb(f"S5 独立搜索曲线 (best A:{a_best:+.1f}° B:{b_best:+.1f}°)",
+                     ImageProcessorV11._debug_search_curves(a_curve, b_curve, a_best, b_best))
+
+        return round(a_best * 10) / 10, round(b_best * 10) / 10
+
+    @staticmethod
+    def tilt_theil_sen(mask_a, mask_b, bbox_a=None, bbox_b=None):
+        """Theil-Sen + 3σ 剔除 — bbox 内逐行中点拟合，删异常行重算。
+        与模板对齐法互补：向量空间法 PK 像素重叠法。
+        返回 (angle_a, angle_b)，精度 0.1°。"""
         def _ts_tilt_robust(mask, bb):
-            if bb is None:
-                return 0.0
+            if bb is None: return 0.0
             x1, y1, x2, y2 = [int(v) for v in bb]
             mid_xs, mid_ys = [], []
             for yi in range(y1, min(y2, mask.shape[0])):
@@ -155,39 +296,25 @@ class ImageProcessorV11:
                 if len(cols) >= 5:
                     mid_xs.append((cols[0] + cols[-1]) * 0.5)
                     mid_ys.append(yi)
-            if len(mid_ys) < 30:
-                return 0.0
-            mx = np.array(mid_xs, dtype=float)
-            my = np.array(mid_ys, dtype=float)
-
-            # Theil-Sen 中位数斜率
-            n = len(my); g = max(1, n // 3)
-            slopes = []
+            if len(mid_ys) < 30: return 0.0
+            mx = np.array(mid_xs, dtype=float); my = np.array(mid_ys, dtype=float)
+            n = len(my); g = max(1, n // 3); slopes = []
             for i in range(0, n - g, max(1, n // 100)):
                 dy = my[i + g] - my[i]
                 if dy > 0: slopes.append((mx[i + g] - mx[i]) / dy)
-            if not slopes:
-                return 0.0
+            if not slopes: return 0.0
             a = float(np.median(slopes))
-
-            # 3σ 剔除异常行
             ym = my.mean(); xm = mx.mean()
             res = np.abs(mx - (xm + a * (my - ym)))
             keep = res <= res.std() * 3.0
-            if keep.sum() < 20 or keep.all():
-                return np.degrees(np.arctan(a))
-
-            # 仅内点重算
+            if keep.sum() < 20 or keep.all(): return np.degrees(np.arctan(a))
             ix, iy = mx[keep], my[keep]
-            ni = len(iy); gi = max(1, ni // 3)
-            slopes2 = []
+            ni = len(iy); gi = max(1, ni // 3); slopes2 = []
             for j in range(0, ni - gi, max(1, ni // 100)):
                 dy = iy[j + gi] - iy[j]
                 if dy > 0: slopes2.append((ix[j + gi] - ix[j]) / dy)
-            if not slopes2:
-                return np.degrees(np.arctan(a))
+            if not slopes2: return np.degrees(np.arctan(a))
             return np.degrees(np.arctan(float(np.median(slopes2))))
-
         a = -_ts_tilt_robust(mask_a, bbox_a) if bbox_a else 0.0
         b = -_ts_tilt_robust(mask_b, bbox_b) if bbox_b else 0.0
         return round(a * 10) / 10, round(b * 10) / 10
@@ -270,11 +397,9 @@ class ImageProcessorV11:
 
         return bbox_a, bbox_b, mask_a, mask_b
 
-    def _joint_detect_debug(self, img_a, img_b):
+    def _joint_detect_debug(self, img_a, img_b, angle_mode="theilsen"):
         """联合检测 + 收集每一步的调试图像。
-
-        Returns: (bbox_a, bbox_b, debug_entries)
-          debug_entries: list of (label: str, image: Image.Image)
+        angle_mode: "theilsen" | "template" — 决定角度算法的调试输出。
         """
         debug = []
 
@@ -338,18 +463,13 @@ class ImageProcessorV11:
                 debug.append(("⑤ CV杆子裁剪(橙=前绿=后) B", self._debug_rod_compare(img_b, bbox_b, rod_bbox_b)))
             bbox_b = rod_bbox_b
 
-        # 6. Theil-Sen 中轴线 — 逐行中点 + 3sigma 剔除
+        # 6. 自动角度 (依 angle_mode 切换)
         angle_a = angle_b = 0.0
         if bbox_a and bbox_b:
-            angle_a, angle_b = ImageProcessorV11.mask_centerline_angle(
-                mask_a, mask_b, bbox_a, bbox_b)
-        if bbox_a and mask_a is not None:
-            # -angle = raw tilt (correction = -raw_tilt)
-            debug.append((f"⑥ Theil-Sen A (tilt={-angle_a:+.1f}° corr={angle_a:+.1f}°) green=fitted red=vertical",
-                          ImageProcessorV11._debug_ts_chart(img_a, mask_a, bbox_a, -angle_a)))
-        if bbox_b and mask_b is not None:
-            debug.append((f"⑥ Theil-Sen B (tilt={-angle_b:+.1f}° corr={angle_b:+.1f}°) green=fitted red=vertical",
-                          ImageProcessorV11._debug_ts_chart(img_b, mask_b, bbox_b, -angle_b)))
+            if angle_mode == "template":
+                self._debug_angle_template(debug, img_a, img_b, mask_a, mask_b, bbox_a, bbox_b)
+            else:
+                self._debug_angle_theilsen(debug, img_a, img_b, mask_a, mask_b, bbox_a, bbox_b)
 
         # 7. 最终 bbox
         if bbox_a:
@@ -516,19 +636,163 @@ class ImageProcessorV11:
         return PA, PB
 
     @staticmethod
-    def _debug_ts_chart(img, mask_arr, bbox, angle_deg):
-        """Theil-Sen: mask(绿) + 内点(黄) + 剔除点(蓝) + 拟合线(绿) + 垂直(红)。"""
+    def _render_mask_pair(ra, rb, text):
+        """通用：绿=正面，蓝=翻转背面，黄=重叠。返回 350px 高 PIL Image。"""
+        from PIL import ImageDraw
+        H = max(ra.shape[0], rb.shape[0]); W = max(ra.shape[1], rb.shape[1])
+        disp_h = min(H, 350); disp_w = int(disp_h * W / H) if H > 0 else 350
+        yi = np.linspace(0, H - 1, disp_h).astype(int)
+        xi = np.linspace(0, W - 1, disp_w).astype(int)
+        img_out = Image.new("RGB", (disp_w, disp_h + 26), (30, 30, 30))
+        draw = ImageDraw.Draw(img_out)
+        for yd in range(disp_h):
+            for xd in range(0, disp_w, 2):
+                a_on = ra[yi[yd], xi[xd]] > 0.5 if yi[yd] < ra.shape[0] and xi[xd] < ra.shape[1] else False
+                b_on = rb[yi[yd], xi[xd]] > 0.5 if yi[yd] < rb.shape[0] and xi[xd] < rb.shape[1] else False
+                if a_on and b_on: draw.point((xd, yd), fill=(255, 200, 60))
+                elif a_on: draw.point((xd, yd), fill=(60, 180, 60))
+                elif b_on: draw.point((xd, yd), fill=(60, 120, 255))
+        draw.text((4, disp_h + 6), text, fill=(200, 200, 200))
+        return img_out
+
+    @staticmethod
+    def _debug_score_grid(angles, grid, best_a, best_b):
+        """S1: 重叠热力图 — 行=A角度，列=B角度，亮=高重叠，圆=最优。"""
+        from PIL import ImageDraw
+        n = len(angles); cell = 50; pad = 60
+        w = pad + n * cell + 200; h = pad + n * cell + 40
+        img = Image.new("RGB", (w, h), (30, 30, 30))
+        draw = ImageDraw.Draw(img)
+        vmin, vmax = grid.min(), grid.max()
+        for i in range(n):
+            for j in range(n):
+                t = (grid[i, j] - vmin) / max(vmax - vmin, 1)
+                c = int(40 + t * 200)
+                color = (c, c, min(255, c + 60))
+                x0, y0, x1, y1 = pad + j * cell, pad + i * cell, pad + (j + 1) * cell - 4, pad + (i + 1) * cell - 4
+                draw.rectangle([x0, y0, x1, y1], fill=color)
+                draw.text((x0 + 16, y0 + 14), str(grid[i, j]), fill=(255, 255, 255))
+        # axis labels
+        for i in range(n):
+            draw.text((pad + i * cell + 14, pad + n * cell + 4), f"{angles[i]:+.1f}", fill=(200, 200, 200))
+            draw.text((pad - 40, pad + i * cell + 14), f"{angles[i]:+.1f}", fill=(200, 200, 200))
+        draw.text((pad + n * cell // 2 - 30, pad + n * cell + 22), "B:", fill=(120, 180, 255))
+        draw.text((pad - 58, pad + n * cell // 2 - 10), "A:", fill=(120, 255, 120))
+        # mark best position
+        ai = int(np.abs(angles - best_a).argmin()); bi = int(np.abs(angles - best_b).argmin())
+        cx, cy = pad + bi * cell + cell // 2, pad + ai * cell + cell // 2
+        draw.ellipse([cx - 10, cy - 10, cx + 10, cy + 10], fill=None, outline=(255, 255, 0), width=3)
+        draw.text((pad + n * cell + 8, 4), f"best: A={best_a:+.1f} B={best_b:+.1f}", fill=(255, 255, 0))
+        return img
+
+    @staticmethod
+    def _debug_mirror_overlay(ra, rb, a, b):
+        """S2: 对齐重叠图 — 正面(绿) + 翻转背面(蓝) + 重叠(黄)。"""
+        return ImageProcessorV11._render_mask_pair(ra, rb,
+            f"对齐重叠 (A:{a:+.1f} B:{b:+.1f}) green=front blue=flipped_back yellow=overlap")
+
+    @staticmethod
+    def _debug_template_only(ra, rb, tpl):
+        """S3: 模板mask = 交集(黄)，仅正面=绿，仅背面=蓝。"""
+        H = max(ra.shape[0], rb.shape[0]); W = max(ra.shape[1], rb.shape[1])
+        h_t, w_t = tpl.shape
+        pa = np.zeros((H, W), dtype=np.float32); pb = np.zeros((H, W), dtype=np.float32)
+        pt = np.zeros((H, W), dtype=np.float32)
+        pa[:h_t, :w_t] = ra[:h_t, :w_t]; pb[:h_t, :w_t] = rb[:h_t, :w_t]; pt[:h_t, :w_t] = tpl
+        from PIL import ImageDraw
+        disp_h = min(H, 350); disp_w = int(disp_h * W / H) if H > 0 else 350
+        yi = np.linspace(0, H - 1, disp_h).astype(int)
+        xi = np.linspace(0, W - 1, disp_w).astype(int)
+        img_out = Image.new("RGB", (disp_w, disp_h + 26), (30, 30, 30))
+        draw = ImageDraw.Draw(img_out)
+        for yd in range(disp_h):
+            for xd in range(0, disp_w, 2):
+                t = pt[yi[yd], xi[xd]] > 0.5 if yi[yd] < pt.shape[0] and xi[xd] < pt.shape[1] else False
+                a = pa[yi[yd], xi[xd]] > 0.5 if yi[yd] < pa.shape[0] and xi[xd] < pa.shape[1] else False
+                b = pb[yi[yd], xi[xd]] > 0.5 if yi[yd] < pb.shape[0] and xi[xd] < pb.shape[1] else False
+                if t: draw.point((xd, yd), fill=(255, 200, 60))
+                elif a: draw.point((xd, yd), fill=(60, 180, 60))
+                elif b: draw.point((xd, yd), fill=(60, 120, 255))
+        draw.text((4, disp_h + 6), f"模板={int(tpl.sum())}px yellow=template green=front_only blue=back_only", fill=(200, 200, 200))
+        return img_out
+
+    @staticmethod
+    def _debug_upright_template(tpl_up):
+        """S4: 摆正后的模板mask — 白色区域就是共识服装轮廓。"""
+        from PIL import ImageDraw
+        H, W = tpl_up.shape
+        disp_h = min(H, 350); disp_w = int(disp_h * W / H) if H > 0 else 350
+        yi = np.linspace(0, H - 1, disp_h).astype(int)
+        xi = np.linspace(0, W - 1, disp_w).astype(int)
+        img_out = Image.new("RGB", (disp_w, disp_h + 26), (30, 30, 30))
+        draw = ImageDraw.Draw(img_out)
+        for yd in range(disp_h):
+            for xd in range(0, disp_w, 2):
+                if yi[yd] < tpl_up.shape[0] and xi[xd] < tpl_up.shape[1] and tpl_up[yi[yd], xi[xd]] > 0.5:
+                    draw.point((xd, yd), fill=(255, 200, 60))
+        draw.text((4, disp_h + 6), f"摆正模板={int(tpl_up.sum())}px yellow=upright_template", fill=(200, 200, 200))
+        return img_out
+
+    @staticmethod
+    def _debug_search_curves(a_curve, b_curve, a_best, b_best):
+        """S5: 搜索曲线 — 红=A独立搜索 蓝=B独立搜索 圆标记=最优角。"""
+        from PIL import ImageDraw
+        w, h = 600, 350; pad_l, pad_r, pad_t, pad_b = 60, 20, 20, 40
+        img = Image.new("RGB", (w, h), (30, 30, 30))
+        draw = ImageDraw.Draw(img)
+        pw = w - pad_l - pad_r; ph = h - pad_t - pad_b
+        all_v = [v for _, v in a_curve + b_curve]
+        vmin, vmax = min(all_v), max(all_v)
+        if vmax <= vmin: vmax = vmin + 1
+        # A curve (red)
+        for curve, color in [(a_curve, (255, 100, 100)), (b_curve, (100, 150, 255))]:
+            pts = []
+            for ang, val in curve:
+                x = pad_l + int(pw * (ang + 0.5) / 1.0)
+                y = pad_t + int(ph * (1 - (val - vmin) / (vmax - vmin)))
+                pts.append((x, y))
+            for j in range(len(pts) - 1):
+                draw.line([pts[j][0], pts[j][1], pts[j + 1][0], pts[j + 1][1]], fill=color, width=2)
+        # Mark best
+        for ang_best, curve, color in [(a_best, a_curve, (255, 100, 100)), (b_best, b_curve, (100, 150, 255))]:
+            idx = min(range(len(curve)), key=lambda k: abs(curve[k][0] - ang_best))
+            x = pad_l + int(pw * (curve[idx][0] + 0.5) / 1.0)
+            y = pad_t + int(ph * (1 - (curve[idx][1] - vmin) / (vmax - vmin)))
+            draw.ellipse([x - 6, y - 6, x + 6, y + 6], fill=color)
+        draw.text((pad_l, pad_t + ph + 6),
+                  f"red=A: {a_best:+.1f}° blue=B: {b_best:+.1f}°", fill=(200, 200, 200))
+        return img
+
+
+    def _debug_angle_template(self, debug, img_a, img_b, mask_a, mask_b, bbox_a, bbox_b):
+        """模板对齐法多步调试：S1网格→S2重叠→S3模板→S4摆正→S5曲线。"""
+        tpl_steps = []
+        aa, ab = ImageProcessorV11.mask_centerline_angle(
+            mask_a, mask_b, bbox_a, bbox_b,
+            debug_cb=lambda label, img: tpl_steps.append((label, img)))
+        debug.extend(tpl_steps)
+
+    def _debug_angle_theilsen(self, debug, img_a, img_b, mask_a, mask_b, bbox_a, bbox_b):
+        """Theil-Sen 中轴法调试：逐行中点+拟合线可视化。"""
+        aa, ab = ImageProcessorV11.tilt_theil_sen(mask_a, mask_b, bbox_a, bbox_b)
+        debug.append((f"Theil-Sen A (corr={aa:+.1f}deg)",
+                      ImageProcessorV11._debug_theilsen_chart(img_a, mask_a, bbox_a, -aa)))
+        debug.append((f"Theil-Sen B (corr={ab:+.1f}deg)",
+                      ImageProcessorV11._debug_theilsen_chart(img_b, mask_b, bbox_b, -ab)))
+
+    @staticmethod
+    def _debug_theilsen_chart(img, mask, bbox, tilt_deg):
+        """TS辅助：mask(绿) + 逐行中点(黄) + Theil-Sen拟合线(绿) + 垂参(红)。"""
         from PIL import ImageDraw
         x1, y1, x2, y2 = [int(v) for v in bbox]
-        if x2 <= x1 or y2 <= y1 or angle_deg == 0:
-            return ImageProcessorV11._debug_bbox_overlay(img, bbox, color=(0, 255, 0))
+        if x2 <= x1 or y2 <= y1: return img
         w_c, h_c = x2 - x1, y2 - y1
         dw, dh = 500, max(1, int(500 * h_c / w_c))
         sx, sy = dw / max(w_c, 1), dh / max(h_c, 1)
         crop = img.crop((x1, y1, x2, y2)).convert('RGBA')
         arr = np.array(crop)
         for yi in range(h_c):
-            cols = np.where(mask_arr[y1 + yi] > 30)[0]
+            cols = np.where(mask[y1 + yi] > 30)[0]
             if cols.size >= 5:
                 xl, xr = max(0, cols[0] - x1), min(w_c, cols[-1] - x1 + 1)
                 arr[yi, int(xl):int(xr), :] = ((arr[yi, int(xl):int(xr), :].astype(np.uint16) * 0.6 +
@@ -536,36 +800,46 @@ class ImageProcessorV11:
         out = Image.fromarray(arr, 'RGBA').convert('RGB').resize((dw, dh), Image.LANCZOS)
         draw = ImageDraw.Draw(out)
         mid_pts = [(float((c2[0] + c2[-1]) * 0.5), float(yi)) for yi in range(y1, y2)
-                   if len(c2 := np.where(mask_arr[yi] > 30)[0]) >= 5]
-        if len(mid_pts) < 20:
-            return out
-        mx = np.array([p[0] for p in mid_pts]); my = np.array([p[1] for p in mid_pts])
-        n = len(my); g = max(1, n // 3)
-        slopes = [(mx[i+g]-mx[i])/(my[i+g]-my[i]) for i in range(0, n-g, max(1, n//100)) if my[i+g] > my[i]]
-        a = float(np.median(slopes)) if slopes else 0.0
-        ym, xm = my.mean(), mx.mean()
-        res = np.abs(mx - (xm + a * (my - ym)))
-        thresh = res.std() * 3.0
-        keep = res <= thresh
-        step = max(1, n // 80)
-        for i in range(0, n, step):
+                   if len(c2 := np.where(mask[yi] > 30)[0]) >= 5]
+        if len(mid_pts) < 20: return out
+        step = max(1, len(mid_pts) // 80)
+        for i in range(0, len(mid_pts), step):
             px, py = int((mid_pts[i][0] - x1) * sx), int((mid_pts[i][1] - y1) * sy)
-            c = (255, 255, 100) if keep[i] else (100, 140, 255)
-            r = 3 if keep[i] else 2
-            draw.ellipse([px - r, py - r, px + r, py + r], fill=c)
-        ix, iy = mx[keep], my[keep]
-        if len(ix) >= 20:
-            ym2, xm2 = iy.mean(), ix.mean()
-            a_f = np.tan(np.radians(angle_deg))
-            ty, by = iy[0], iy[-1]
-            draw.line([int((xm2 + a_f*(ty-ym2) - x1)*sx), int((ty - y1)*sy),
-                       int((xm2 + a_f*(by-ym2) - x1)*sx), int((by - y1)*sy)],
+            draw.ellipse([px - 2, py - 2, px + 2, py + 2], fill=(255, 255, 100))
+        if abs(tilt_deg) > 0.001:
+            mx = np.array([p[0] for p in mid_pts]); my = np.array([p[1] for p in mid_pts])
+            ym = my.mean(); xm = mx.mean()
+            a = np.tan(np.radians(tilt_deg))
+            ty, by = my[0], my[-1]
+            draw.line([int((xm + a*(ty - ym) - x1)*sx), int((ty - y1)*sy),
+                       int((xm + a*(by - ym) - x1)*sx), int((by - y1)*sy)],
                       fill=(0, 255, 200), width=2)
-        cx_mid = (x1 + x2) / 2
-        draw.line([int((cx_mid - x1)*sx), 0, int((cx_mid - x1)*sx), dh], fill=(255, 80, 80), width=1)
-        n_in, n_out = int(keep.sum()), n - int(keep.sum())
-        draw.text((4, 2), f'TS: {angle_deg:+.1f} in={n_in}/{n} out={n_out} 3sig={thresh:.0f}px yellow=kept blue=rej green=fitted red=vertical', fill=(255, 255, 255))
+        cx = (x1 + x2) / 2
+        draw.line([int((cx - x1)*sx), 0, int((cx - x1)*sx), dh], fill=(255, 80, 80), width=1)
+        draw.text((4, 2), f'Theil-Sen: tilt={tilt_deg:+.1f} green=fitted red=vertical yellow=midpoints', fill=(255, 255, 255))
         return out
+
+    @staticmethod
+    def _debug_fusion_summary(aa, ab, ta, tb, fa, fb):
+        """融合摘要：模板对齐 vs Theil-Sen 对比表。"""
+        from PIL import ImageDraw
+        img = Image.new("RGB", (600, 200), (30, 30, 30))
+        draw = ImageDraw.Draw(img)
+        headers = [("方法", (80, 40)), ("A 面角度", (250, 40)), ("B 面角度", (420, 40))]
+        for (txt, (x, y)), c in zip(headers, [(255,255,255), (120,255,120), (120,180,255)]):
+            draw.text((x, y), txt, fill=c)
+        rows = [
+            ("模板对齐", aa, ab, (255, 200, 100) if abs(aa - fa) < 0.3 else (255, 100, 100)),
+            ("Theil-Sen", ta, tb, (255, 200, 100) if abs(ta - fa) < 0.3 else (255, 100, 100)),
+        ]
+        for ri, (label, a_v, b_v, color) in enumerate(rows):
+            y = 80 + ri * 40
+            draw.text((80, y), label, fill=(200, 200, 200))
+            draw.text((250, y), f"{a_v:+.1f}", fill=color)
+            draw.text((420, y), f"{b_v:+.1f}", fill=color)
+        draw.line([80, 120, 520, 120], fill=(100, 100, 100), width=1)
+        draw.text((80, 140), f"融合 → A: {fa:+.1f}°  B: {fb:+.1f}° (一致=平均 分歧=取TS)", fill=(255, 255, 0))
+        return img
 
 
 

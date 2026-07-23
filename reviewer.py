@@ -417,6 +417,10 @@ class ReviewerApp(ctk.CTk):
 
         ctk.CTkFrame(bar, width=1, height=24, fg_color="#555").pack(side="left", padx=10)
 
+        self._angle_mode = "theilsen"
+        self._btn_angle_mode = ctk.CTkButton(bar, text="TheilSen", width=70,
+                                             command=self._toggle_angle_mode)
+        self._btn_angle_mode.pack(side="left", padx=2)
         ctk.CTkButton(bar, text="⇄ 互换", width=60, command=self._swap_fb).pack(side="left", padx=2)
         ctk.CTkButton(bar, text="重置AI", width=60, command=self._reset_ai).pack(side="left", padx=2)
         ctk.CTkButton(bar, text="液化", width=50, fg_color="#6B3FA0", hover_color="#56338A",
@@ -551,17 +555,32 @@ class ReviewerApp(ctk.CTk):
         self._update_preview()
         self._auto_save_debounce()
 
+    def _toggle_angle_mode(self):
+        """切换倾斜修正算法：Theil-Sen ↔ Template。"""
+        if self._angle_mode == "theilsen":
+            self._angle_mode = "template"
+            self._btn_angle_mode.configure(text="Template", fg_color="#6B3FA0")
+        else:
+            self._angle_mode = "theilsen"
+            self._btn_angle_mode.configure(text="TheilSen", fg_color="#555")
+        self._recalc_angle()
+
     def _recalc_angle(self):
-        """镜像对齐法：反面翻转 + 旋转使共识区间最大 → 校正角。"""
-        if self._mask_a is not None and self._mask_b is not None:
+        """根据当前模式调用对应角度算法。"""
+        if self._mask_a is None or self._mask_b is None:
+            return
+        if self._angle_mode == "theilsen":
+            angle_a, angle_b = self.processor.tilt_theil_sen(
+                self._mask_a, self._mask_b, self.bbox_a, self.bbox_b)
+        else:
             angle_a, angle_b = self.processor.mask_centerline_angle(
                 self._mask_a, self._mask_b, self.bbox_a, self.bbox_b)
-            self.angle_a = angle_a
-            self.editor_a.angle = angle_a
-            self.lbl_angle_a.configure(text=f"{angle_a:+.1f}°")
-            self.angle_b = angle_b
-            self.editor_b.angle = angle_b
-            self.lbl_angle_b.configure(text=f"{angle_b:+.1f}°")
+        self.angle_a = angle_a
+        self.angle_b = angle_b
+        self.editor_a.angle = angle_a
+        self.lbl_angle_a.configure(text=f"{angle_a:+.1f}°")
+        self.editor_b.angle = angle_b
+        self.lbl_angle_b.configure(text=f"{angle_b:+.1f}°")
 
     def _reset_angle(self, which):
         """重置单面角度为零（杆子）并应用于该面。"""
@@ -1077,7 +1096,8 @@ class ReviewerApp(ctk.CTk):
         try:
             ia = ImageOps.exif_transpose(Image.open(pa)).convert("RGB")
             ib = ImageOps.exif_transpose(Image.open(pb)).convert("RGB")
-            _, _, debug_entries = self.processor._joint_detect_debug(ia, ib)
+            _, _, debug_entries = self.processor._joint_detect_debug(
+                ia, ib, angle_mode=self._angle_mode)
             DebugWindow(self, debug_entries, f"调试 — {pa.stem} + {pb.stem}")
         except Exception as e:
             self.status.configure(text=f"调试失败: {e}")
