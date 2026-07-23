@@ -35,6 +35,12 @@ python reviewer.py
 
 ---
 
+## GUI 布局
+
+![软件界面](15df504845e9fe04150c5828243e57fc.png)
+
+---
+
 ## AI+CV 检测管线
 
 ```
