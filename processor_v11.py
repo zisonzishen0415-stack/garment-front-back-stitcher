@@ -70,7 +70,7 @@ class ImageProcessorV11:
         img_a = ImageOps.exif_transpose(Image.open(img_path_a)).convert("RGB")
         img_b = ImageOps.exif_transpose(Image.open(img_path_b)).convert("RGB")
 
-        bbox_a, bbox_b, _mask_a, _mask_b = self._joint_detect(img_a, img_b)
+        bbox_a, bbox_b, _mask_a, _mask_b, _ang_a, _ang_b = self._joint_detect(img_a, img_b)
 
         # 统一crop_w
         unified_cw = self._unified_crop_w(img_a, bbox_a, img_b, bbox_b)
@@ -273,7 +273,128 @@ class ImageProcessorV11:
         if bbox_b:
             bbox_b = self._trim_rod_bottom(img_b, mask_b, bbox_b)
 
-        return bbox_a, bbox_b, mask_a, mask_b
+        # v11.3: 角度校正 → bbox 反哺（迭代收敛，最多 3 轮）
+        angle_a = angle_b = 0.0
+        for _round in range(3):
+            # 从当前 bbox 内的 mask 算 Theil-Sen 中轴角
+            if bbox_a:
+                x1, y1, x2, y2 = [int(v) for v in bbox_a]
+                roi_a = mask_a[y1:y2, x1:x2]
+                tilt_a = ImageProcessorV11._theil_sen_tilt(roi_a)
+            else:
+                tilt_a = 0.0
+            if bbox_b:
+                x1, y1, x2, y2 = [int(v) for v in bbox_b]
+                roi_b = mask_b[y1:y2, x1:x2]
+                tilt_b = ImageProcessorV11._theil_sen_tilt(roi_b)
+            else:
+                tilt_b = 0.0
+
+            # 累计角度
+            angle_a += -tilt_a
+            angle_b += tilt_b
+
+            # 收敛判断
+            if abs(tilt_a) < 0.5 and abs(tilt_b) < 0.5:
+                break
+
+            # 旋转 mask 区域 → 重新找 bbox
+            if abs(tilt_a) >= 0.5:
+                rotated_a = ImageProcessorV11._rotate_mask_region(
+                    mask_a, bbox_a, -tilt_a)
+                new_bb_a = ImageProcessorV11._mask_bbox(rotated_a)
+                if new_bb_a:
+                    # 转回原图坐标
+                    bx, by, _, _ = bbox_a
+                    bbox_a = (new_bb_a[0] + bx, new_bb_a[1] + by,
+                              new_bb_a[2] + bx, new_bb_a[3] + by)
+                    # 更新局部 mask 供下轮使用
+                    mask_a[by:by + rotated_a.shape[0],
+                           bx:bx + rotated_a.shape[1]] = rotated_a.astype(np.uint8) * 255
+
+            if abs(tilt_b) >= 0.5:
+                rotated_b = ImageProcessorV11._rotate_mask_region(
+                    mask_b, bbox_b, tilt_b)
+                new_bb_b = ImageProcessorV11._mask_bbox(rotated_b)
+                if new_bb_b:
+                    bx, by, _, _ = bbox_b
+                    bbox_b = (new_bb_b[0] + bx, new_bb_b[1] + by,
+                              new_bb_b[2] + bx, new_bb_b[3] + by)
+                    mask_b[by:by + rotated_b.shape[0],
+                           bx:bx + rotated_b.shape[1]] = rotated_b.astype(np.uint8) * 255
+
+        angle_a = round(angle_a * 2) / 2
+        angle_b = round(angle_b * 2) / 2
+
+        return bbox_a, bbox_b, mask_a, mask_b, angle_a, angle_b
+
+    @staticmethod
+    def _theil_sen_tilt(mask_roi):
+        """从 mask 区域提取 Theil-Sen 中轴倾角（度）。"""
+        h = mask_roi.shape[0]
+        mid_xs, mid_ys = [], []
+        for yi in range(h):
+            cols = np.where(mask_roi[yi] > 30)[0]
+            if len(cols) >= 5:
+                mid_xs.append((cols[0] + cols[-1]) * 0.5)
+                mid_ys.append(yi)
+        if len(mid_ys) < 20:
+            return 0.0
+        mx = np.array(mid_xs, dtype=float)
+        my = np.array(mid_ys, dtype=float)
+        n = len(my); g = max(1, n // 3)
+        slopes = []
+        for i in range(0, n - g, max(1, n // 100)):
+            dy = my[i + g] - my[i]
+            if dy > 0:
+                slopes.append((mx[i + g] - mx[i]) / dy)
+        if not slopes:
+            return 0.0
+        a = float(np.median(slopes))
+        # 3σ 剔除异常行
+        ym, xm = my.mean(), mx.mean()
+        res = np.abs(mx - (xm + a * (my - ym)))
+        keep = res <= res.std() * 3.0
+        if keep.sum() >= 20 and not keep.all():
+            mx_k, my_k = mx[keep], my[keep]
+            n2 = len(my_k); g2 = max(1, n2 // 3)
+            s2 = []
+            for i in range(0, n2 - g2, max(1, n2 // 100)):
+                dy = my_k[i + g2] - my_k[i]
+                if dy > 0:
+                    s2.append((mx_k[i + g2] - mx_k[i]) / dy)
+            if s2:
+                a = float(np.median(s2))
+        return np.degrees(np.arctan(a))
+
+    @staticmethod
+    def _rotate_mask_region(mask, bbox, deg):
+        """旋转 mask 局部区域（bbox 内），手写旋转无损。"""
+        x1, y1, x2, y2 = [int(v) for v in bbox]
+        roi = mask[y1:y2, x1:x2]
+        h, w = roi.shape
+        if abs(deg) < 0.01:
+            return roi > 30
+        rad = np.radians(deg); c = np.cos(rad); sx = np.sin(rad)
+        cx, cy = w / 2.0, h / 2.0
+        ys, xs = np.where(roi > 30)
+        if len(ys) < 100:
+            return roi > 30
+        nx = np.round((xs - cx) * c - (ys - cy) * sx + cx).astype(int)
+        ny = np.round((xs - cx) * sx + (ys - cy) * c + cy).astype(int)
+        out = np.zeros_like(roi, dtype=bool)
+        ok = (nx >= 0) & (nx < w) & (ny >= 0) & (ny < h)
+        out[ny[ok], nx[ok]] = True
+        return out
+
+    @staticmethod
+    def _mask_bbox(mask_bool):
+        """从 bool mask 计算 bbox（局部坐标）。"""
+        rows, cols = np.where(mask_bool)
+        if len(rows) < 100:
+            return None
+        return (int(cols.min()), int(rows.min()),
+                int(cols.max()), int(rows.max()))
 
     def _joint_detect_debug(self, img_a, img_b):
         """联合检测 + 收集每一步的调试图像。

@@ -702,8 +702,8 @@ class ReviewerApp(ctk.CTk):
                     try:
                         img_a = ImageOps.exif_transpose(Image.open(pa)).convert("RGB")
                         img_b = ImageOps.exif_transpose(Image.open(pb)).convert("RGB")
-                        bb_a, bb_b, mask_a, mask_b = self.processor._joint_detect(img_a, img_b)
-                        self._results[i] = (bb_a, bb_b, mask_a, mask_b)
+                        bb_a, bb_b, mask_a, mask_b, angle_a, angle_b = self.processor._joint_detect(img_a, img_b)
+                        self._results[i] = (bb_a, bb_b, mask_a, mask_b, angle_a, angle_b)
                     except Exception:
                         self._results[i] = (None, None)
                     self.after(0, lambda idx=i: self._on_one_done(idx))
@@ -790,14 +790,20 @@ class ReviewerApp(ctk.CTk):
         self.img_b = ImageOps.exif_transpose(Image.open(pb)).convert("RGB")
 
         res = self._results[self.pair_idx]
-        if res and len(res) == 4:
+        if res and len(res) >= 6:
+            self.ai_bbox_a, self.ai_bbox_b, self._mask_a, self._mask_b, self._angle_a, self._angle_b = res
+            self.angle_a, self.angle_b = self._angle_a, self._angle_b
+        elif res and len(res) == 4:
             self.ai_bbox_a, self.ai_bbox_b, self._mask_a, self._mask_b = res
+            self._angle_a = self._angle_b = 0.0
         elif res:
             self.ai_bbox_a, self.ai_bbox_b = res[0], res[1]
             self._mask_a = self._mask_b = None
+            self._angle_a = self._angle_b = 0.0
         else:
             self.ai_bbox_a = self.ai_bbox_b = None
             self._mask_a = self._mask_b = None
+            self._angle_a = self._angle_b = 0.0
 
         ann_a = self.annotations.get(pa.name, {})
         ann_b = self.annotations.get(pb.name, {})
@@ -817,9 +823,6 @@ class ReviewerApp(ctk.CTk):
         else:
             self.bbox_b = [self.img_b.width//4, self.img_b.height//4,
                            self.img_b.width*3//4, self.img_b.height*3//4]
-
-        # Compute angle from current bbox + mask
-        self._recalc_angle()
 
         self.editor_a.set_image(self.img_a, self.bbox_a, self.ai_bbox_a, self.angle_a)
         self.editor_b.set_image(self.img_b, self.bbox_b, self.ai_bbox_b, self.angle_b)
