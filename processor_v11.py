@@ -108,22 +108,12 @@ class ImageProcessorV11:
     # -- rembg 单管道 ----------------------------------------------------
 
     def _single_pipe(self, img: Image.Image) -> tuple[Optional[tuple[int, int, int, int]], np.ndarray]:
-        """单管道：自适应对比度增强 → rembg → (bbox, mask)。
+        """单管道：对比度增强 → rembg → 杆子/支架色彩过滤 → (bbox, mask)。
 
-        v11 用 CLAHE 自适应直方图均衡化做局部对比度增强，
-        对浅色/纯白服装与人台的弱边界远比固定系数增强有效。
-        skimage 随 rembg 安装，无需额外依赖。
+        rembg 对纯白服装易把金属杆误检为服装。rembg 后用 HSV 滤除
+        mask 前景中的深灰 / 低饱和像素（金属杆/支架的典型特征）。
         """
-        # CLAHE 自适应对比度 — 让纯白服装的微弱纹理直接可见
-        from skimage.exposure import equalize_adapthist
-        import numpy as np
-        lab_img = img.convert("LAB")
-        l_arr, a_arr, b_arr = lab_img.split()
-        l_np = np.array(l_arr, dtype=np.float32) / 255.0
-        l_eq = equalize_adapthist(l_np, clip_limit=0.02, kernel_size=None)
-        l_pil = Image.fromarray((l_eq * 255).astype(np.uint8))
-        enhanced = Image.merge("LAB", (l_pil, a_arr, b_arr)).convert("RGB")
-
+        enhanced = ImageEnhance.Contrast(img).enhance(1.4)
         from rembg import remove
         mask = remove(enhanced, session=self._get_session(), only_mask=True)
         w, h = img.size
@@ -133,6 +123,12 @@ class ImageProcessorV11:
             else:
                 mask = mask.resize((w, h), Image.LANCZOS)
         mask_arr = np.array(mask)
+
+        # 杆子/支架色彩过滤：深灰+低饱和 → 从 mask 前景中扣除
+        hsv = np.array(img.convert("HSV"), dtype=np.float32)
+        rod_mask = (hsv[..., 1] < 50) & (hsv[..., 2] < 160)  # 低饱和 + 中低亮度
+        mask_arr[(mask_arr > 30) & rod_mask] = 0
+
         rows, cols = np.where(mask_arr > 30)
         if len(rows) < 100:
             return None, mask_arr
