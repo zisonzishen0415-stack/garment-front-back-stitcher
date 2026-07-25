@@ -39,6 +39,10 @@ python reviewer.py
 
 ![软件界面](15df504845e9fe04150c5828243e57fc.png)
 
+### 演示视频
+
+<video src="演示视频.mp4" controls width="100%"></video>
+
 ---
 
 ## AI+CV 检测管线
