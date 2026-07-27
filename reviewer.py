@@ -59,6 +59,15 @@ class BBoxEditor(tk.Canvas):
         self._pan_data = None
         self._on_change = on_change
         self._last_fit_w = 0
+        # 性能优化：帧率节流 + 延迟预览
+        self._last_redraw = 0.0       # perf_counter for 16ms throttle
+        self._defer_preview = False   # drag 期间推迟预览
+        self._preview_deferred = False
+        self._display_cache = None    # 下采样显示缓存
+        self._display_cache_scale = 0.0
+        self._display_cache_size = (0, 0)
+        self._wheel_id = None         # after() id for wheel throttle
+        self._pan_id = None           # after() id for pan throttle
 
         self.bind("<ButtonPress-1>", self._on_down)
         self.bind("<B1-Motion>", self._on_move)
@@ -75,6 +84,8 @@ class BBoxEditor(tk.Canvas):
         self.bbox = list(bbox)
         self.angle = float(angle)
         self.ai_bbox = list(ai_bbox) if ai_bbox else None
+        self._display_cache = None   # 清除显示缓存
+        self._display_cache_scale = 0.0
         # _on_configure 或 _fit 决定何时布局；set_image 先跑一次
         self._last_fit_w = 0  # 追踪上次 fit 的画布尺寸，避免重复重绘
         self._fit()
@@ -124,7 +135,7 @@ class BBoxEditor(tk.Canvas):
     PLACEHOLDER_W = 220  # 统一定宽，三区域尺寸一致
 
     def _redraw(self):
-        """完整重绘：背景图 + 叠加层"""
+        """完整重绘：背景图 + 叠加层。切图/缩放时调用。"""
         self.delete("all")
         if not self.pil_img:
             # 空编辑器：显示品牌 logo 居中
@@ -136,15 +147,25 @@ class BBoxEditor(tk.Canvas):
                 dw = min(self.PLACEHOLDER_W, cw - 20)
                 dh = int(dw * ph_h / pw)
                 self._photo = ImageTk.PhotoImage(ph.resize((dw, dh), Image.LANCZOS))
-                self.create_image(cw // 2, ch // 2, anchor=tk.CENTER, image=self._photo, tags="all")
+                self.create_image(cw // 2, ch // 2, anchor=tk.CENTER, image=self._photo)
             return
 
-        # 背景图
+        # 背景图 — BILINEAR 显示级缩放 + 缓存
         iw, ih = self.pil_img.size
         dw, dh = max(1, int(iw * self.scale)), max(1, int(ih * self.scale))
-        disp = self.pil_img.resize((dw, dh), Image.LANCZOS)
-        self._photo = ImageTk.PhotoImage(disp)
-        self.create_image(self.ox, self.oy, anchor=tk.NW, image=self._photo, tags="all")
+        if (self._display_cache is None or self._display_cache_scale != self.scale
+                or self._display_cache_size != (dw, dh)):
+            self._display_cache = self.pil_img.resize((dw, dh), Image.BILINEAR)
+            self._display_cache_scale = self.scale
+            self._display_cache_size = (dw, dh)
+        self._photo = ImageTk.PhotoImage(self._display_cache)
+        self.create_image(self.ox, self.oy, anchor=tk.NW, image=self._photo, tags="bg")
+
+        self._draw_overlay()
+
+    def _draw_overlay(self):
+        """只重绘叠加层（绿框 + 控制点 + AI 虚线）。拖拽时调用此方法，避免重建背景图。"""
+        self.delete("overlay")
 
         # AI bbox（灰虚线）
         if self.ai_bbox:
@@ -159,7 +180,7 @@ class BBoxEditor(tk.Canvas):
         for ix, iy in corners:
             cx_, cy_ = self._to_canvas(ix, iy)
             self.create_rectangle(cx_ - hs, cy_ - hs, cx_ + hs, cy_ + hs,
-                                  fill=HANDLE_COLOR, outline="white", width=1)
+                                  fill=HANDLE_COLOR, outline="white", width=1, tags="overlay")
         edges = [
             ((corners[0][0]+corners[1][0])/2, (corners[0][1]+corners[1][1])/2),
             ((corners[1][0]+corners[2][0])/2, (corners[1][1]+corners[2][1])/2),
@@ -169,7 +190,7 @@ class BBoxEditor(tk.Canvas):
         for ix, iy in edges:
             cx_, cy_ = self._to_canvas(ix, iy)
             self.create_rectangle(cx_ - hs, cy_ - hs, cx_ + hs, cy_ + hs,
-                                  fill="#FFFFFF", outline=BOX_COLOR, width=1)
+                                  fill="#FFFFFF", outline=BOX_COLOR, width=1, tags="overlay")
 
     def _draw_poly(self, b, angle_deg, color, width, dash=()):
         corners = self._rotated_corners(b, angle_deg)
@@ -177,7 +198,7 @@ class BBoxEditor(tk.Canvas):
         for x, y in corners:
             cx_, cy_ = self._to_canvas(x, y)
             pts.extend([cx_, cy_])
-        self.create_polygon(*pts, outline=color, width=width, fill="", dash=dash)
+        self.create_polygon(*pts, outline=color, width=width, fill="", dash=dash, tags="overlay")
 
     # ── 命中检测 ──────────────────────────────────────────────
 
@@ -230,22 +251,35 @@ class BBoxEditor(tk.Canvas):
     # ── 鼠标事件 ──────────────────────────────────────────────
 
     def _on_down(self, event):
+        # 清理上一次残留的拖拽状态（鼠标可能在 Canvas 外松开导致 _on_up 丢失）
+        if self._defer_preview:
+            self._defer_preview = False
+            if self._preview_deferred and self._on_change:
+                self._preview_deferred = False
+                self._on_change()
+        self._drag = None
+        self._drag_box = None
+        self._preview_deferred = False
+
         h = self._hit_corner(event.x, event.y)
         if h:
             self._drag = h
             self._drag_sx, self._drag_sy = event.x, event.y
             self._drag_box = list(self.bbox)
+            self._defer_preview = True
             return
         e = self._hit_edge(event.x, event.y)
         if e:
             self._drag = e
             self._drag_sx, self._drag_sy = event.x, event.y
             self._drag_box = list(self.bbox)
+            self._defer_preview = True
             return
         if self._poly_contains(event.x, event.y):
             self._drag = "move"
             self._drag_sx, self._drag_sy = event.x, event.y
             self._drag_box = list(self.bbox)
+            self._defer_preview = True
 
     def _on_move(self, event):
         if not self._drag or self._drag_box is None: return
@@ -277,12 +311,26 @@ class BBoxEditor(tk.Canvas):
             new = fn()
             if new and len(new) == 4:
                 self.bbox = list(new)
-                self._redraw()
-                if self._on_change: self._on_change()
+                # 拖拽期间只重绘叠加层（绿框 + 控制点），不重建背景图
+                now = time.perf_counter()
+                if now - self._last_redraw >= 0.016:
+                    self._draw_overlay()
+                    self._last_redraw = now
+                if self._on_change:
+                    self._preview_deferred = True
 
     def _on_up(self, event):
+        was_dragging = self._drag is not None
         self._drag = None
         self._drag_box = None
+        if self._defer_preview:
+            self._defer_preview = False
+            if was_dragging:
+                # 松手后做一次完整重绘（确保背景图位置正确）
+                self._redraw()
+            if self._preview_deferred and self._on_change:
+                self._preview_deferred = False
+                self._on_change()
 
     def _on_wheel(self, event):
         if not self.pil_img: return
@@ -292,7 +340,10 @@ class BBoxEditor(tk.Canvas):
         self.scale = max(0.02, min(5.0, self.scale * factor))
         self.ox = mx - old_ix * self.scale
         self.oy = my - old_iy * self.scale
-        self._redraw()
+        # 16ms 帧率节流，取消之前的延迟重绘
+        if self._wheel_id:
+            self.after_cancel(self._wheel_id)
+        self._wheel_id = self.after(16, self._redraw)
 
     def _on_pan_down(self, event):
         self._pan_data = (self.ox, self.oy, event.x, event.y)
@@ -302,7 +353,10 @@ class BBoxEditor(tk.Canvas):
             ox0, oy0, mx0, my0 = self._pan_data
             self.ox = ox0 + (event.x - mx0)
             self.oy = oy0 + (event.y - my0)
-            self._redraw()
+            # 16ms 帧率节流
+            if self._pan_id:
+                self.after_cancel(self._pan_id)
+            self._pan_id = self.after(16, self._redraw)
 
     def update_display(self):
         self._fit()
@@ -318,6 +372,7 @@ class ReviewerApp(ctk.CTk):
         super().__init__()
         self.title("PS 审核编辑")
         self.geometry("1500x850")
+        self.minsize(900, 600)  # 防止窗口过小导致布局崩溃
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
 
@@ -339,6 +394,9 @@ class ReviewerApp(ctk.CTk):
         self._preview_zoom = 1.0
         self._liquified: Optional[Image.Image] = None  # 液化修改后的结果
         self._preview_placeholder = None  # 预览水印
+        self._load_seq = 0              # 异步加载序列号，防止竞态
+        self._spinner_id = None         # 加载旋转动画 canvas id
+        self._spinner_after = None      # spinner after() id
 
         # 流式处理
         self._proc_done = 0
@@ -387,6 +445,9 @@ class ReviewerApp(ctk.CTk):
                 elapsed = time.time() - self._t0
                 self._status_loader.configure(text=f"模型就绪 ({elapsed:.1f}s)")
                 return
+            # 显示加载进度
+            elapsed = time.time() - self._t0
+            self._status_loader.configure(text=f"模型加载中 ({elapsed:.1f}s)")
             self.after(200, self._check_prewarm)
         except Exception:
             self.after(200, self._check_prewarm)
@@ -395,42 +456,42 @@ class ReviewerApp(ctk.CTk):
 
     def _build_ui(self):
         bar = ctk.CTkFrame(self)
-        bar.pack(fill="x", padx=8, pady=(8, 4))
+        bar.pack(fill="x", padx=6, pady=(6, 2))
 
-        ctk.CTkLabel(bar, text="文件夹:").pack(side="left", padx=(8, 4))
-        self.entry_dir = ctk.CTkEntry(bar, width=280)
-        self.entry_dir.pack(side="left", padx=4)
-        ctk.CTkButton(bar, text="浏览", width=50, command=self._pick_dir).pack(side="left", padx=2)
-        ctk.CTkButton(bar, text="AI 处理", width=70, command=lambda: self._start_process()).pack(side="left", padx=(10, 2))
-        self.btn_debug = ctk.CTkButton(bar, text="调试", width=50,
+        ctk.CTkLabel(bar, text="文件夹:").pack(side="left", padx=(4, 2))
+        self.entry_dir = ctk.CTkEntry(bar, width=200)
+        self.entry_dir.pack(side="left", padx=2)
+        ctk.CTkButton(bar, text="浏览", width=45, command=self._pick_dir).pack(side="left", padx=1)
+        ctk.CTkButton(bar, text="AI 处理", width=60, command=lambda: self._start_process()).pack(side="left", padx=(6, 1))
+        self.btn_debug = ctk.CTkButton(bar, text="调试", width=40,
                                         command=self._start_debug, state="disabled")
-        self.btn_debug.pack(side="left", padx=2)
+        self.btn_debug.pack(side="left", padx=1)
 
-        ctk.CTkFrame(bar, width=1, height=24, fg_color="#555").pack(side="left", padx=10)
+        ctk.CTkFrame(bar, width=1, height=20, fg_color="#555").pack(side="left", padx=6)
 
-        self.btn_prev = ctk.CTkButton(bar, text="◀ 上一对", width=70, command=self._prev_pair, state="disabled")
-        self.btn_prev.pack(side="left", padx=2)
-        self.lbl_idx = ctk.CTkLabel(bar, text="0 / 0", font=ctk.CTkFont(size=13, weight="bold"), width=70)
-        self.lbl_idx.pack(side="left", padx=2)
-        self.btn_next = ctk.CTkButton(bar, text="下一对 ▶", width=70, command=self._next_pair, state="disabled")
-        self.btn_next.pack(side="left", padx=2)
+        self.btn_prev = ctk.CTkButton(bar, text="◀", width=30, command=self._prev_pair, state="disabled")
+        self.btn_prev.pack(side="left", padx=1)
+        self.lbl_idx = ctk.CTkLabel(bar, text="0 / 0", font=ctk.CTkFont(size=13, weight="bold"), width=55)
+        self.lbl_idx.pack(side="left", padx=1)
+        self.btn_next = ctk.CTkButton(bar, text="▶", width=30, command=self._next_pair, state="disabled")
+        self.btn_next.pack(side="left", padx=1)
 
-        ctk.CTkFrame(bar, width=1, height=24, fg_color="#555").pack(side="left", padx=10)
+        ctk.CTkFrame(bar, width=1, height=20, fg_color="#555").pack(side="left", padx=6)
 
         self._angle_mode = "theilsen"
-        self._btn_angle_mode = ctk.CTkButton(bar, text="TheilSen", width=70,
+        self._btn_angle_mode = ctk.CTkButton(bar, text="TheilSen", width=65,
                                              command=self._toggle_angle_mode)
-        self._btn_angle_mode.pack(side="left", padx=2)
-        ctk.CTkButton(bar, text="⇄ 互换", width=60, command=self._swap_fb).pack(side="left", padx=2)
-        ctk.CTkButton(bar, text="重置AI", width=60, command=self._reset_ai).pack(side="left", padx=2)
-        ctk.CTkButton(bar, text="液化", width=50, fg_color="#6B3FA0", hover_color="#56338A",
-                       command=self._liquify).pack(side="left", padx=2)
+        self._btn_angle_mode.pack(side="left", padx=1)
+        ctk.CTkButton(bar, text="互换", width=45, command=self._swap_fb).pack(side="left", padx=1)
+        ctk.CTkButton(bar, text="重置AI", width=55, command=self._reset_ai).pack(side="left", padx=1)
+        ctk.CTkButton(bar, text="液化", width=40, fg_color="#6B3FA0", hover_color="#56338A",
+                       command=self._liquify).pack(side="left", padx=1)
 
-        ctk.CTkFrame(bar, width=1, height=24, fg_color="#555").pack(side="left", padx=10)
+        ctk.CTkFrame(bar, width=1, height=20, fg_color="#555").pack(side="left", padx=6)
 
-        ctk.CTkButton(bar, text="导出当前", width=70, fg_color="#2B8C3C", hover_color="#236E30",
-                       command=self._export_single).pack(side="left", padx=2)
-        ctk.CTkButton(bar, text="全部导出", width=70, command=self._export_all).pack(side="left", padx=2)
+        ctk.CTkButton(bar, text="导出", width=45, fg_color="#2B8C3C", hover_color="#236E30",
+                       command=self._export_single).pack(side="left", padx=1)
+        ctk.CTkButton(bar, text="批量", width=45, command=self._export_all).pack(side="left", padx=1)
 
         # Logo（右侧，点击显示关于）
         if self._logo_img:
@@ -448,13 +509,15 @@ class ReviewerApp(ctk.CTk):
         self.lbl_fname = ctk.CTkLabel(bar, text="", font=ctk.CTkFont(size=9), text_color="#999")
         self.lbl_fname.pack(side="right", padx=8)
 
-        # 主体
+        # 主体 — grid 布局比 pack 更可控：左列固定预览，右列弹性编辑器
         main = ctk.CTkFrame(self)
         main.pack(fill="both", expand=True, padx=8, pady=(4, 8))
+        main.grid_columnconfigure(0, weight=0)   # 预览列：固定宽度
+        main.grid_columnconfigure(1, weight=1)   # 编辑列：弹性扩展
+        main.grid_rowconfigure(0, weight=1)
 
-        # 左：预览面板 — 强制 1:1 正方形（宽 = main 可用高度）
         left = ctk.CTkFrame(main, width=500, height=500)
-        left.pack(side="left", fill="y", padx=(4, 2), pady=4)
+        left.grid(row=0, column=0, sticky="ns", padx=(4, 2), pady=4)
         left.pack_propagate(False)
         ctk.CTkLabel(left, text="拼接预览", font=ctk.CTkFont(weight="bold")).pack(pady=(6, 2))
         self.preview_canvas = tk.Canvas(left, bg="#1E1E1E", highlightthickness=0)
@@ -462,15 +525,20 @@ class ReviewerApp(ctk.CTk):
         self.preview_canvas.bind("<MouseWheel>", self._on_preview_wheel)
         self.preview_canvas.bind("<Enter>", lambda e: self.preview_canvas.focus_set())
         self.preview_canvas.bind("<Configure>", self._on_preview_configure)
-        main.bind("<Configure>", lambda e: left.configure(width=max(200, e.height - 8)))
+        # 预览 1:1 正方形 = 容器高度（原始设计），窄屏时压缩以保编辑器 ≥420px
+        main.bind("<Configure>", lambda e: left.configure(
+            width=max(200, min(e.height - 8, e.width - 420))))
 
-        # 右：编辑（左右并排，占据剩余水平空间）
+        # 右：编辑 — grid 等分正面/反面（窄窗时两侧等比压缩）
         right = ctk.CTkFrame(main)
-        right.pack(side="left", fill="both", expand=True, padx=(2, 4), pady=4)
+        right.grid(row=0, column=1, sticky="nsew", padx=(2, 4), pady=4)
+        right.grid_columnconfigure(0, weight=1)  # 正面列
+        right.grid_columnconfigure(1, weight=1)  # 反面列
+        right.grid_rowconfigure(0, weight=1)
 
         # -- 正面（左） --
         frame_a = ctk.CTkFrame(right)
-        frame_a.pack(side="left", fill="both", expand=True, padx=(2, 2), pady=4)
+        frame_a.grid(row=0, column=0, sticky="nsew", padx=(2, 2), pady=4)
 
         row_a = ctk.CTkFrame(frame_a)
         row_a.pack(fill="x", padx=4, pady=(4, 2))
@@ -488,7 +556,7 @@ class ReviewerApp(ctk.CTk):
 
         # -- 反面（右） --
         frame_b = ctk.CTkFrame(right)
-        frame_b.pack(side="left", fill="both", expand=True, padx=(2, 2), pady=4)
+        frame_b.grid(row=0, column=1, sticky="nsew", padx=(2, 2), pady=4)
 
         row_b = ctk.CTkFrame(frame_b)
         row_b.pack(fill="x", padx=4, pady=(4, 2))
@@ -615,6 +683,11 @@ class ReviewerApp(ctk.CTk):
                 self.status.configure(text="已选文件夹，点击「AI 处理」开始")
 
     def _start_process(self, auto_load=False):
+        # 模型还在加载中，不允许开始处理
+        if not getattr(self.processor, '_warmed', False):
+            self.status.configure(text="模型仍在加载中，请稍候...")
+            return
+
         # Prevent re-entry while worker is running
         if getattr(self, '_processing', False):
             self.status.configure(text="AI 正在处理中，请稍候...")
@@ -798,16 +871,13 @@ class ReviewerApp(ctk.CTk):
         if not self.pairs or self.pair_idx >= self._proc_done:
             return
 
-        self._liquified = None  # 切图时清除液化缓存
-        self.winfo_toplevel().update()  # 强制全窗口布局完成
+        self._liquified = None
 
         pa, pb = self.pairs[self.pair_idx]
         self.lbl_idx.configure(text=f"{self.pair_idx + 1} / {self._proc_total}")
         self.lbl_fname.configure(text=f"{pa.stem}  +  {pb.stem}")
 
-        self.img_a = ImageOps.exif_transpose(Image.open(pa)).convert("RGB")
-        self.img_b = ImageOps.exif_transpose(Image.open(pb)).convert("RGB")
-
+        # 解析 bbox / mask（不依赖图片，从 AI 结果和标注获取）
         res = self._results[self.pair_idx]
         if res and len(res) == 4:
             self.ai_bbox_a, self.ai_bbox_b, self._mask_a, self._mask_b = res
@@ -821,31 +891,73 @@ class ReviewerApp(ctk.CTk):
         ann_a = self.annotations.get(pa.name, {})
         ann_b = self.annotations.get(pb.name, {})
 
+        # bbox：标注优先 → AI 结果 → 兜底（图片加载后覆盖）
         if "bbox" in ann_a:
             self.bbox_a = list(ann_a["bbox"])
         elif self.ai_bbox_a:
             self.bbox_a = list(self.ai_bbox_a)
         else:
-            self.bbox_a = [self.img_a.width//4, self.img_a.height//4,
-                           self.img_a.width*3//4, self.img_a.height*3//4]
+            self.bbox_a = None  # 需要图片才能算
 
         if "bbox" in ann_b:
             self.bbox_b = list(ann_b["bbox"])
         elif self.ai_bbox_b:
             self.bbox_b = list(self.ai_bbox_b)
         else:
-            self.bbox_b = [self.img_b.width//4, self.img_b.height//4,
-                           self.img_b.width*3//4, self.img_b.height*3//4]
+            self.bbox_b = None
 
-        # Compute angle from current bbox + mask
-        self._recalc_angle()
+        # 角度：已标注用标注值，否则用 AI 默认
+        if self.bbox_a is not None and self.bbox_b is not None:
+            if "angle" in ann_a:
+                self.angle_a = ann_a["angle"]
+            else:
+                self._recalc_angle()
+            if "angle" not in ann_b:
+                pass  # _recalc_angle 已同时设置 a 和 b
+        else:
+            self.angle_a = ann_a.get("angle", 0.0)
+            self.angle_b = ann_b.get("angle", 0.0)
 
-        self.editor_a.set_image(self.img_a, self.bbox_a, self.ai_bbox_a, self.angle_a)
-        self.editor_b.set_image(self.img_b, self.bbox_b, self.ai_bbox_b, self.angle_b)
+        # 显示角度
         self.lbl_angle_a.configure(text=f"{self.angle_a:+.1f}°")
         self.lbl_angle_b.configure(text=f"{self.angle_b:+.1f}°")
-        self._update_preview()
-        self.after(100, self._fit_editors)  # customtkinter 嵌套布局慢，补一刀确保 scale 正确
+
+        # 后台异步加载图片 + 显示旋转 spinner
+        self._load_seq += 1
+        seq = self._load_seq
+        self._show_loading()
+        self.status.configure(text="加载图片...")
+
+        def _load():
+            try:
+                ia = ImageOps.exif_transpose(Image.open(pa)).convert("RGB")
+                ib = ImageOps.exif_transpose(Image.open(pb)).convert("RGB")
+            except Exception:
+                ia = ib = None
+
+            def _done():
+                if seq != self._load_seq:
+                    return  # 用户已切到其他对，丢弃
+                self._hide_loading()
+                if ia is None:
+                    self.status.configure(text="图片加载失败")
+                    return
+                self.img_a = ia; self.img_b = ib
+                # 兜底 bbox
+                if self.bbox_a is None:
+                    self.bbox_a = [ia.width//4, ia.height//4,
+                                   ia.width*3//4, ia.height*3//4]
+                if self.bbox_b is None:
+                    self.bbox_b = [ib.width//4, ib.height//4,
+                                   ib.width*3//4, ib.height*3//4]
+                self.editor_a.set_image(ia, self.bbox_a, self.ai_bbox_a, self.angle_a)
+                self.editor_b.set_image(ib, self.bbox_b, self.ai_bbox_b, self.angle_b)
+                self._update_preview()
+                self.status.configure(text=f"当前: {pa.stem} + {pb.stem}")
+                self.after(100, self._fit_editors)
+            self.after(0, _done)
+
+        threading.Thread(target=_load, daemon=True).start()
 
     @staticmethod
     def _natural_w(bbox):
@@ -891,8 +1003,8 @@ class ReviewerApp(ctk.CTk):
                         if is_a: crop_a = tmp
                         else:    crop_b = tmp
             th = min(crop_a.height, crop_b.height); th += th % 2; hw = th // 2
-            left = crop_a.resize((hw, th), Image.LANCZOS)
-            right = crop_b.resize((hw, th), Image.LANCZOS)
+            left = crop_a.resize((hw, th), Image.BILINEAR)
+            right = crop_b.resize((hw, th), Image.BILINEAR)
             preview = Image.new("RGB", (th, th), (255, 255, 255))
             preview.paste(left, (0, 0)); preview.paste(right, (hw, 0))
 
@@ -901,10 +1013,15 @@ class ReviewerApp(ctk.CTk):
         display_size = min(cw_canvas, ch_canvas)
         ds = max(int(display_size * self._preview_zoom), 100)
         if th != ds:
-            preview = preview.resize((ds, ds), Image.LANCZOS)
+            preview = preview.resize((ds, ds), Image.BILINEAR)
 
         self._preview_img = ImageTk.PhotoImage(preview)
-        c.delete("all")
+        c.delete("spinner")  # 清除 spinner（如果正在加载）
+        # 清除画布但不删 spinner tag（已在上面删）
+        items = c.find_all()
+        for item in items:
+            if "spinner" not in c.gettags(item):
+                c.delete(item)
         px = (cw_canvas - ds) // 2; py = (ch_canvas - ds) // 2
         c.create_image(px, py, anchor=tk.NW, image=self._preview_img)
 
@@ -916,6 +1033,41 @@ class ReviewerApp(ctk.CTk):
         for frac in [0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875]:
             lx = px + int(ds * frac)
             c.create_line(lx, py, lx, py + ds, fill=gray, width=1, dash=ds_sub, stipple="gray50")
+
+    # ── 加载动画 ────────────────────────────────────────────────
+
+    def _show_loading(self):
+        """在预览 canvas 中央显示半透明旋转加载弧。"""
+        c = self.preview_canvas
+        cw = max(c.winfo_width(), 100)
+        ch = max(c.winfo_height(), 100)
+        r = min(cw, ch) // 10
+        cx, cy = cw // 2, ch // 2
+        self._spinner_angle = 0
+        self._spinner_id = c.create_arc(
+            cx - r, cy - r, cx + r, cy + r,
+            start=0, extent=270, outline="#BBBBBB", width=3,
+            style="arc", tags="spinner")
+        self._spin()
+
+    def _spin(self):
+        if not self._spinner_id:
+            return
+        self._spinner_angle = (self._spinner_angle + 20) % 360
+        c = self.preview_canvas
+        try:
+            c.itemconfigure(self._spinner_id, start=self._spinner_angle)
+        except Exception:
+            self._spinner_id = None
+            return
+        self._spinner_after = self.after(40, self._spin)
+
+    def _hide_loading(self):
+        if self._spinner_after:
+            self.after_cancel(self._spinner_after)
+            self._spinner_after = None
+        self._spinner_id = None
+        self.preview_canvas.delete("spinner")
 
     def _on_preview_configure(self, event=None):
         """预览 canvas 尺寸变化时：如果无图片，重绘水印 logo。"""
@@ -939,7 +1091,6 @@ class ReviewerApp(ctk.CTk):
         self._preview_photo = photo  # keep ref
 
     def _on_preview_wheel(self, event):
-        """鼠标滚轮缩放拼接预览。"""
         z = self._preview_zoom
         z *= 1.1 if event.delta > 0 else 1 / 1.1
         self._preview_zoom = max(1.0, min(5.0, z))
@@ -1009,8 +1160,10 @@ class ReviewerApp(ctk.CTk):
         self.annotations[pa.name] = {"file": pa.name, "bbox": list(self.bbox_a), "angle": self.angle_a}
         self.annotations[pb.name] = {"file": pb.name, "bbox": list(self.bbox_b), "angle": self.angle_b}
         data = {"source_dir": str(self.input_dir), "annotations": list(self.annotations.values())}
-        (self.input_dir / "annotations.json").write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        json_text = json.dumps(data, ensure_ascii=False, indent=2)
+        ann_path = self.input_dir / "annotations.json"
+        # 后台写入，不阻塞 UI
+        threading.Thread(target=lambda: ann_path.write_text(json_text, encoding="utf-8"), daemon=True).start()
 
     # ── 导出 ──────────────────────────────────────────────────
 

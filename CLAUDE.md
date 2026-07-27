@@ -5,8 +5,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-# Install dependencies (first time)
+# Install core dependencies (first time)
 pip install -r requirements.txt
+
+# For liquify with scipy acceleration (optional — works without it via pure numpy)
+pip install scipy
+
+# For building the Windows installer
+pip install pyinstaller svgpathtools
 
 # Launch the review/edit GUI (main entry point)
 python reviewer.py
@@ -18,7 +24,7 @@ python main.py
 python liquify.py
 
 # Run the manual annotation tool
-python annotator.py
+python annotator.py <素材目录> [输出JSON]
 
 # Build icon assets from logo.svg (requires svgpathtools)
 python build_icon.py
@@ -88,7 +94,7 @@ Input folder (sorted by filename)
 
 - `reviewer.py` — depends on `processor_v11.py` and `liquify.py`. Contains `BBoxEditor` (tk.Canvas with handle-drag interaction), `ReviewerApp` (ctk.CTk main window with toolbar, dual editors, preview canvas), `AboutWindow` (modal popup with logo), and `DebugWindow` (6-step pipeline visualization showing rembg mask → bbox → width profiles → consensus interval → rod trim → result).
 - `processor_v11.py` — self-contained, only imports rembg/numpy/Pillow. No internal state beyond a lazily-created rembg session.
-- `liquify.py` — self-contained liquify engine (`LiquifyEngine` + `LiquifyCanvas` + `LiquifyTool`). The engine maintains a 2D deformation grid (spacing=8px) with undo history (50 steps max). Can work with or without scipy (falls back to bilinear interpolation in pure numpy).
+- `liquify.py` — self-contained liquify engine (`LiquifyEngine` + `LiquifyCanvas` + `LiquifyTool`). The engine maintains a 2D deformation grid (spacing=8px) with undo history (50 steps max). Uses scipy for acceleration if available, otherwise falls back to bilinear interpolation in pure numpy.
 - `batch_manual.py` — batch export using annotations.json (not used in the main GUI flow).
 - `garment-stitcher.spec` — PyInstaller **onedir** build config. Uses the pattern: `EXE(..., exclude_binaries=True)` + `COLLECT(exe, a.binaries, a.zipfiles, a.datas)`. The EXE is a thin bootloader (~18MB) that loads everything from `_internal/`. Do NOT pass `a.binaries`/`a.zipfiles` to EXE — that creates a 129MB hybrid exe that misbehaves (extracts to %TEMP% instead of using `_internal/`). Excludes heavy packages (matplotlib, torch, tensorflow). Hidden imports needed: `rembg`, `onnxruntime`, `skimage`, `pymatting`, `pooch`, `tkinter.ttk`.
 - `installer.nsi` — NSIS installer script, packages the PyInstaller output into `GarmentStitcher_Setup.exe`.
@@ -108,14 +114,21 @@ The "液化" button in the reviewer generates a full-resolution stitched preview
 
 ### Model handling
 
-**Installed (onedir):** `sys._MEIPASS` points to `_internal/` under the install dir. The module-level code sets `U2NET_HOME` to point there so rembg reads the bundled model directly. No file copying needed.
+**Installed (onedir):** `sys._MEIPASS` points to `_internal/` under the install dir. The top of `reviewer.py` detects `_internal/models/u2net.onnx` and sets `U2NET_HOME` env var before importing processor_v11, so rembg reads the bundled model directly. No file copying needed.
 
-**Develop mode (`python reviewer.py`):** `_BUNDLED_MODEL` won't exist, so rembg uses its default `~/.u2net/` path. The model must be downloaded on first run (rembg auto-downloads via pooch).
+**Develop mode (`python reviewer.py`):** No `_internal/models/` directory, so `U2NET_HOME` is not set; rembg uses its default `~/.u2net/` path. The model must be downloaded on first run (rembg auto-downloads via pooch).
 
 **Threading** (see `processor_v11.py`):
 - `_get_session()` uses **double-checked locking** (`threading.Lock`) — prevents race conditions where prewarm and worker threads both create separate sessions.
 - `prewarm()` only loads model weights (`new_session()`), no inference.
-- The **warmup inference** happens in the worker thread right before the first pair: a 32×32 dummy image is passed through rembg. This is critical because ONNX Runtime's first `run()` triggers lazy init (memory planning, kernel JIT, thread pool binding) — it must happen in the same thread that will process real images, otherwise the first pair gets wrong results.
+- The **warmup inference** happens in the worker thread right before the first pair: the first real image is passed through `_single_pipe()`. This is critical because ONNX Runtime's first `run()` triggers lazy init (memory planning, kernel JIT, thread pool binding) — it must happen in the same thread that will process real images. A 32×32 dummy image is explicitly NOT used because ONNX allocates different memory/kernel paths for small vs. large images, so a small-image warmup would be useless for real photos.
+
+**Streaming worker** (see `reviewer.py` `_start_process()`):
+- AI processing runs in a `daemon=True` background thread that iterates over all pairs.
+- After each pair's `_joint_detect()` completes, it calls `self.after(0, lambda: self._on_one_done(idx))` to signal the main (GUI) thread — tkinter is NOT thread-safe, so all UI updates must go through `after()`.
+- `_on_one_done()` updates the status bar and, for the very first pair, auto-loads it immediately so the user can start reviewing while remaining pairs process in the background.
+- On completion, `_on_all_done()` writes annotations.json via `_save_ai_results()`.
+- The `_processing` flag prevents double-starting; `daemon=True` ensures the thread doesn't block app exit.
 
 ### Reviewer keyboard shortcuts
 
@@ -126,14 +139,37 @@ The "液化" button in the reviewer generates a full-resolution stitched preview
 | X | Swap front/back |
 | R | Reset rotation to 0° |
 | F | Fit editors to window |
-| , / . | Rotate 0.5° CCW/CW |
+| F1 | About dialog |
+| , / . | Rotate 0.5° CCW/CW (bound to `<comma>`/`<period>`) |
+
+### Annotator keyboard shortcuts
+
+The annotator (`annotator.py`) is a standalone tool with its own rembg import and keyboard shortcuts, independent of any processor module:
+
+| Key | Action |
+|-----|--------|
+| S / Enter | Save and jump to next image |
+| R | Reset to rembg bbox |
+| F | Fit to window |
+| Space / → | Next image |
+| ← | Previous image |
+| 1 / 2 / 3 | Zoom 100% / 200% / 300% |
+| Escape | Exit |
+
+### Supported input formats
+
+JPG, JPEG, PNG, BMP, TIFF (defined as `IMAGE_EXTS` in reviewer.py). Recommended resolution ≤ 4080px for responsive UI.
 
 ### Important constants
 
-- `MARGIN = 0.12` (reviewer) — extra space around bbox when cropping
+- `MARGIN = 0.12` (reviewer and batch_manual) — 12% extra padding around bbox when cropping
 - `CONSENSUS_RATIO_THRESHOLD = 1.35` — max front/back width ratio for consensus rows
-- `CATEGORIES` — maps garment height ratio to margin/fill parameters for crop sizing
+- `CATEGORIES` — list of `(height_ratio_threshold, margin, fill_ratio)` tuples for crop sizing; e.g. `(0.60, 0.07, 0.60)` means garments with height/bbox-height > 0.60 get 7% margin and 60% fill
 - Liquify grid spacing = 8px, max undo steps = 50
+
+### Exploratory scripts (not part of main architecture)
+
+The repo contains ~30 `batch_*.py`, `diagnose_*.py`, `explore_*.py`, `test_*.py`, `validate_*.py`, `compare_*.py` files from iterative development, plus `processor_v11_backup.py`. These are experimental artifacts from evolving the pipeline through many versions (v9→v23+) and are NOT used in production. They can be safely ignored.
 
 ### File pairing convention
 

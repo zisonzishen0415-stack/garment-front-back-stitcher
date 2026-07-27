@@ -19,6 +19,7 @@
 """
 
 import math
+from collections import deque
 from pathlib import Path
 from typing import Optional
 import tkinter as tk
@@ -49,9 +50,13 @@ def _fast_resize(grid: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
 
 
 class LiquifyEngine:
-    def __init__(self, image: Image.Image, grid_spacing: int = 8):
+    def __init__(self, image: Image.Image, grid_spacing: int = None):
         self.original = image.copy()
         self.w, self.h = image.size
+        # 自适应网格间距：大图用 16px 网格（省 4x 内存和计算量）
+        if grid_spacing is None:
+            max_dim = max(self.w, self.h)
+            grid_spacing = 16 if max_dim > 2500 else 8
         self.grid_spacing = grid_spacing
         self.gw = self.w // grid_spacing + 1
         self.gh = self.h // grid_spacing + 1
@@ -62,11 +67,11 @@ class LiquifyEngine:
         self._cache_img: Optional[Image.Image] = None
         self._full_arr: Optional[np.ndarray] = None   # 全帧 numpy 缓存 (uint8, H×W×3)
         self._dirty_rect: Optional[list] = None        # 脏矩形 [x1,y1,x2,y2] 图片坐标, None=需全刷
-        self._history: list[tuple[np.ndarray, np.ndarray]] = []
+        self._history: deque = deque(maxlen=25)        # deque 自动淘汰旧记录
+        self._stroke_snapshot = None                   # 笔画开始时快照
 
     def push_history(self):
         self._history.append((self.dx.copy(), self.dy.copy()))
-        if len(self._history) > 50: self._history.pop(0)
 
     def undo(self) -> bool:
         if not self._history: return False
@@ -86,7 +91,10 @@ class LiquifyEngine:
     def brush_stroke(self, x, y, prev_x, prev_y, radius, pressure):
         delta_x = x - prev_x; delta_y = y - prev_y
         if max(abs(delta_x), abs(delta_y)) < 0.5: return
-        self.push_history()
+        # 只在笔画开始时保存一次历史（而非每次鼠标事件）
+        if self._stroke_snapshot is None:
+            self.push_history()
+            self._stroke_snapshot = True
         gx_min = max(0, int((x - radius) / self.grid_spacing) - 1)
         gx_max = min(self.gw - 1, int((x + radius) / self.grid_spacing) + 1)
         gy_min = max(0, int((y - radius) / self.grid_spacing) - 1)
@@ -115,6 +123,10 @@ class LiquifyEngine:
             self._dirty_rect[1] = min(self._dirty_rect[1], dr_y1)
             self._dirty_rect[2] = max(self._dirty_rect[2], dr_x2)
             self._dirty_rect[3] = max(self._dirty_rect[3], dr_y2)
+
+    def end_stroke(self):
+        """笔画结束，重置快照标记，下次描边重新保存历史。"""
+        self._stroke_snapshot = None
 
     def get_warped(self, display_scale: float = 1.0) -> Image.Image:
         """返回变形后的 PIL Image。自动选择全量或增量渲染路径。"""
@@ -190,35 +202,52 @@ class LiquifyEngine:
             self._dirty = False
             return self._cache_img
 
-        # 全量位移场（变形网格小，_fast_resize 开销可忽略）
-        dx_full = _fast_resize(self.dx, dw, dh) * display_scale
-        dy_full = _fast_resize(self.dy, dw, dh) * display_scale
+        # 位移场 — 只缩放脏区域对应的网格子块
+        gx1 = max(0, int(dr[0] / self.grid_spacing) - 1)
+        gx2 = min(self.gw, int(dr[2] / self.grid_spacing) + 2)
+        gy1 = max(0, int(dr[1] / self.grid_spacing) - 1)
+        gy2 = min(self.gh, int(dr[3] / self.grid_spacing) + 2)
+        sub_dx = _fast_resize(self.dx[gy1:gy2, gx1:gx2], sub_w, sub_h) * display_scale
+        sub_dy = _fast_resize(self.dy[gy1:gy2, gx1:gx2], sub_w, sub_h) * display_scale
 
-        sub_dx = dx_full[dy1:dy2, dx1:dx2]
-        sub_dy = dy_full[dy1:dy2, dx1:dx2]
+        # 源图像 — 只裁剪脏矩形区域（留 margin 覆盖位移边界）
+        disp_margin = max(30, int(max(np.abs(sub_dx).max(), np.abs(sub_dy).max()))) + 5
+        sx1 = max(0, dx1 - disp_margin)
+        sy1 = max(0, dy1 - disp_margin)
+        sx2 = min(dw, dx2 + disp_margin)
+        sy2 = min(dh, dy2 + disp_margin)
 
-        src = self.original.resize((dw, dh), Image.LANCZOS) if display_scale < 1.0 else self.original
-        arr = np.array(src, dtype=np.float32)
+        if display_scale < 1.0:
+            src = self.original.resize((dw, dh), Image.LANCZOS)
+            sub_src = src.crop((sx1, sy1, sx2, sy2))
+        else:
+            sub_src = self.original.crop((
+                int(sx1 / display_scale), int(sy1 / display_scale),
+                int(sx2 / display_scale), int(sy2 / display_scale)))
+            sub_src = sub_src.resize((sx2 - sx1, sy2 - sy1), Image.LANCZOS)
+        arr_sub = np.array(sub_src, dtype=np.float32)
 
         ys, xs = np.mgrid[dy1:dy2, dx1:dx2].astype(np.float32)
-        src_xs = xs - sub_dx
-        src_ys = ys - sub_dy
+        src_xs = xs - sub_dx - sx1
+        src_ys = ys - sub_dy - sy1
+        sw = sx2 - sx1
+        sh = sy2 - sy1
 
         if _HAS_SCIPY:
             sub_result = np.zeros((sub_h, sub_w, 3), dtype=np.uint8)
             coords = np.stack([src_ys.ravel(), src_xs.ravel()], axis=0)
             for c in range(3):
-                sub_result[:, :, c] = _sp_map(arr[:, :, c], coords.reshape(2, sub_h, sub_w),
+                sub_result[:, :, c] = _sp_map(arr_sub[:, :, c], coords.reshape(2, sub_h, sub_w),
                                               order=1, mode='constant', cval=255, prefilter=False)
             sub_result = np.clip(sub_result, 0, 255).astype(np.uint8)
         else:
-            src_xs = np.clip(src_xs, 0, dw - 1.001)
-            src_ys = np.clip(src_ys, 0, dh - 1.001)
+            src_xs = np.clip(src_xs, 0, sw - 1.001)
+            src_ys = np.clip(src_ys, 0, sh - 1.001)
             x0 = src_xs.astype(int); y0 = src_ys.astype(int)
-            x1 = np.minimum(x0 + 1, dw - 1); y1 = np.minimum(y0 + 1, dh - 1)
+            x1 = np.minimum(x0 + 1, sw - 1); y1 = np.minimum(y0 + 1, sh - 1)
             fx = src_xs - x0; fy = src_ys - y0
             fx = fx[:, :, np.newaxis]; fy = fy[:, :, np.newaxis]
-            q00 = arr[y0, x0]; q10 = arr[y0, x1]; q01 = arr[y1, x0]; q11 = arr[y1, x1]
+            q00 = arr_sub[y0, x0]; q10 = arr_sub[y0, x1]; q01 = arr_sub[y1, x0]; q11 = arr_sub[y1, x1]
             sub_result = np.clip((1 - fy) * ((1 - fx) * q00 + fx * q10) +
                                  fy * ((1 - fx) * q01 + fx * q11), 0, 255).astype(np.uint8)
 
@@ -345,6 +374,8 @@ class LiquifyCanvas(tk.Canvas):
                              outline="#00BFFF", width=1, dash=(3, 5), tags="brush")
 
     def _on_up(self, event):
+        if self._mode == 'warp':
+            self.engine.end_stroke()
         self._mode = None
         self._render()
 

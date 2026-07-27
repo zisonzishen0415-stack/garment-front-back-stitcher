@@ -234,24 +234,6 @@ class ImageProcessorV11:
             debug_cb(f"S3 模板mask (交集={int(tpl.sum())}px) yellow=template green=front_only blue=back_only",
                      ImageProcessorV11._debug_template_only(ra_opt[:h_t, :w_t], rb_opt[:h_t, :w_t], tpl))
 
-        # === Step 3: 摆正模板 ===
-            for b in angles:
-                rb = _rot(PB > 0.5, b)
-                ov = _overlap(ra, rb)
-                if ov > best_ov: best_ov = ov; best_a = float(a); best_b = float(b)
-
-        if best_ov <= baseline:
-            return 0.0, 0.0
-
-        # --- Step 2: 模板 = 最优角下的交集 ---
-        ra_opt = _rot(PA > 0.5, best_a)
-        rb_opt = _rot(PB > 0.5, best_b)
-        h_t = min(ra_opt.shape[0], rb_opt.shape[0])
-        w_t = min(ra_opt.shape[1], rb_opt.shape[1])
-        tpl = ((ra_opt[:h_t, :w_t] > 0.5) & (rb_opt[:h_t, :w_t] > 0.5)).astype(np.float32)
-        if int(tpl.sum()) < 50:
-            return 0.0, 0.0
-
         # --- Step 3: 模板中轴倾角 → 摆正 ---
         tpl_tilt = _tilt(tpl)
         tpl_up = _rot(tpl > 0.5, -tpl_tilt) if abs(tpl_tilt) >= 0.05 else tpl
@@ -321,13 +303,17 @@ class ImageProcessorV11:
 
     @staticmethod
     def _vertical_profile(mask_arr):
-        h = mask_arr.shape[0]
-        ys, ls, rs = [], [], []
-        for y in range(h):
-            c = np.where(mask_arr[y] > 30)[0]
-            if len(c) > 10:
-                ys.append(y); ls.append(c.min()); rs.append(c.max())
-        return (np.array(ys), np.array(ls), np.array(rs)) if ys else (np.array([]), np.array([]), np.array([]))
+        """向量化逐行宽度提取：np.argmax 替代逐行 np.where 循环。"""
+        h, w = mask_arr.shape
+        row_mask = mask_arr > 30
+        row_counts = row_mask.sum(axis=1)
+        valid = row_counts > 10
+        ys = np.where(valid)[0]
+        if len(ys) < 11:
+            return np.array([]), np.array([]), np.array([])
+        ls = np.argmax(row_mask, axis=1)[valid]
+        rs = w - 1 - np.argmax(row_mask[:, ::-1], axis=1)[valid]
+        return ys, ls, rs
 
     @staticmethod
     def _largest_consensus_interval(y, mask):
@@ -858,27 +844,23 @@ class ImageProcessorV11:
         if bw < 30:
             return bbox
 
-        # 逐行计算 mask 宽度占比
-        rows_data = []
-        for y in range(y1, y2):
-            c = np.where(mask_arr[y] > 30)[0]
-            if len(c) >= 5:
-                rows_data.append((y, (c.max() - c.min()) / bw))
-            else:
-                rows_data.append((y, 0))
-
-        if len(rows_data) < 40:
+        # 向量化：一次计算所有行的 mask 宽度占比
+        region = mask_arr[y1:y2, :] > 30
+        row_counts = region.sum(axis=1)
+        valid = row_counts >= 5
+        n = len(row_counts)
+        if n < 40:
             return bbox
 
-        # 平滑（小窗口，保持边界敏感）
-        n = len(rows_data)
+        w_full = mask_arr.shape[1]
+        lefts = np.argmax(region, axis=1)
+        rights = w_full - 1 - np.argmax(region[:, ::-1], axis=1)
+        ratios = np.where(valid, (rights - lefts).astype(float) / bw, 0.0)
+
+        # 平滑 — np.convolve 替代逐元素切片求均值
         win = max(n // 60, 2)
-        ys_arr = [rows_data[i][0] for i in range(n)]
-        ratios = [rows_data[i][1] for i in range(n)]
-        smoothed = np.zeros(n)
-        for i in range(n):
-            lo, hi = max(0, i - win), min(n, i + win + 1)
-            smoothed[i] = np.mean(ratios[lo:hi])
+        kernel = np.ones(2 * win + 1) / (2 * win + 1)
+        smoothed = np.convolve(ratios, kernel, mode='same')
 
         # 计算身体参考宽度：上半部中位数
         body_ref = float(np.median(smoothed[:n // 2]))
@@ -886,16 +868,14 @@ class ImageProcessorV11:
             return bbox  # 整体都窄，不裁剪
 
         # 从上半部往下扫描：找宽度骤降点（杆子/人台腿开始处）
-        # 方法：取局部 1/8 区域的宽度中位数，和 body_ref 比较
         seg_len = max(n // 20, 5)
         cutoff_y = y2
         for i in range(n // 2, n - seg_len):
             seg_median = float(np.median(ratios[i:i + seg_len]))
             if seg_median < body_ref * 0.20 and seg_median < 0.10:
-                # 这个区段显著窄，检查下方是否也持续窄
                 below_median = float(np.median(ratios[i:]))
                 if below_median < body_ref * 0.25:
-                    cutoff_y = ys_arr[i]
+                    cutoff_y = y1 + i
                     break
 
         if cutoff_y < y2 and y2 - cutoff_y > bh * 0.05 and cutoff_y - y1 >= 150:
