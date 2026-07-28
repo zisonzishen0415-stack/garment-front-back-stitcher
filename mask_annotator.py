@@ -160,7 +160,7 @@ class MaskCanvas(tk.Canvas):
         overlay[fg, 0] = 255       # R
         overlay[fg, 3] = MASK_ALPHA  # A
         self._overlay_photo = ImageTk.PhotoImage(
-            Image.fromarray(overlay, 'RGBA'))
+            Image.fromarray(overlay))
         self.create_image(self.ox, self.oy, anchor=tk.NW,
                           image=self._overlay_photo, tags="overlay")
 
