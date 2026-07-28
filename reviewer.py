@@ -974,10 +974,20 @@ class ReviewerApp(ctk.CTk):
             img = img.rotate(angle, Image.BICUBIC, center=(cx, cy),
                              expand=False, fillcolor=(255, 255, 255))
         w, h = img.size; x1, y1, x2, y2 = bbox
-        bcy = (y1 + y2) / 2; bcx = (x1 + x2) / 2
+        bcy = (y1 + y2) / 2
         crop_h = crop_w * 2
-        # bbox 居中于裁切窗口，正反面左右余量对称
-        cx = int(bcx - crop_w / 2)
+        # 黄金比例：外侧（近画幅边缘）∶ 中间总间隙（正+反内侧） = φ ∶ 1
+        # 设 inner_a ≈ inner_b = inner，则 outer / (2*inner) = φ
+        # → inner = extra / (2φ + 1), outer = extra - inner
+        bw = x2 - x1
+        extra = max(0, crop_w - bw)
+        phi = 1.618
+        inner = int(extra / (2 * phi + 1))  # 近中线侧 ≈24%
+        outer = extra - inner               # 近边缘侧 ≈76%
+        if anchor == "right":
+            cx = x2 + inner - crop_w
+        else:
+            cx = x1 - inner
         if cx < 0: cx = 0
         if cx + crop_w > w: cx = w - crop_w
         cy = int(bcy - crop_h / 2)
