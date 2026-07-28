@@ -794,7 +794,8 @@ class ReviewerApp(ctk.CTk):
                     try:
                         img_a = ImageOps.exif_transpose(Image.open(pa)).convert("RGB")
                         img_b = ImageOps.exif_transpose(Image.open(pb)).convert("RGB")
-                        bb_a, bb_b, mask_a, mask_b = self.processor._joint_detect(img_a, img_b)
+                        bb_a, bb_b, mask_a, mask_b = self.processor._joint_detect(
+                            img_a, img_b, stem_a=str(pa), stem_b=str(pb))
                         self._results[i] = (bb_a, bb_b, mask_a, mask_b)
                     except Exception:
                         self._results[i] = (None, None)
@@ -1260,7 +1261,8 @@ class ReviewerApp(ctk.CTk):
             ia = ImageOps.exif_transpose(Image.open(pa)).convert("RGB")
             ib = ImageOps.exif_transpose(Image.open(pb)).convert("RGB")
             _, _, debug_entries = self.processor._joint_detect_debug(
-                ia, ib, angle_mode=self._angle_mode)
+                ia, ib, angle_mode=self._angle_mode,
+                stem_a=str(pa), stem_b=str(pb))
             DebugWindow(self, debug_entries, f"调试 — {pa.stem} + {pb.stem}")
         except Exception as e:
             self.status.configure(text=f"调试失败: {e}")

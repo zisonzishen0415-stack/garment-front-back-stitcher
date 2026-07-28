@@ -107,12 +107,28 @@ class ImageProcessorV11:
 
     # -- rembg 单管道 ----------------------------------------------------
 
-    def _single_pipe(self, img: Image.Image) -> tuple[Optional[tuple[int, int, int, int]], np.ndarray]:
+    def _single_pipe(self, img: Image.Image, stem: Optional[str] = None
+                     ) -> tuple[Optional[tuple[int, int, int, int]], np.ndarray]:
         """单管道：对比度增强 → rembg → (bbox, mask)。
 
         v11 用对比度增强做 rembg，对暗色衣物/人台分离效果较好。
         一次 rembg 推理同时产出 bbox 和 mask，避免重复调用。
+
+        如果有手工标注的 <stem>_mask.png，直接加载并跳过 rembg。
         """
+        # 手工标注 mask 优先
+        if stem:
+            mask_path = Path(stem).parent / f"{Path(stem).stem}_mask.png"
+            if mask_path.exists():
+                mask_arr = np.array(Image.open(mask_path).convert("L"))
+                if mask_arr.shape != (img.size[1], img.size[0]):
+                    mask_arr = np.array(
+                        Image.fromarray(mask_arr).resize(img.size, Image.LANCZOS))
+                rows, cols = np.where(mask_arr > 30)
+                if len(rows) >= 100:
+                    return (int(cols.min()), int(rows.min()),
+                            int(cols.max()), int(rows.max())), mask_arr
+
         enhanced = ImageEnhance.Contrast(img).enhance(1.4)
         from rembg import remove
         mask = remove(enhanced, session=self._get_session(), only_mask=True)
@@ -343,10 +359,10 @@ class ImageProcessorV11:
         return (int(c.min()), yi + int(r.min()),
                 min(mask_arr.shape[1], int(c.max())), yi + int(r.max()))
 
-    def _joint_detect(self, img_a, img_b):
+    def _joint_detect(self, img_a, img_b, stem_a=None, stem_b=None):
         """Returns (bbox_a, bbox_b, mask_a, mask_b) — masks kept for angle detection."""
-        bbox_a, mask_a = self._single_pipe(img_a)
-        bbox_b, mask_b = self._single_pipe(img_b)
+        bbox_a, mask_a = self._single_pipe(img_a, stem=stem_a)
+        bbox_b, mask_b = self._single_pipe(img_b, stem=stem_b)
 
         ys_a, lefts_a, rights_a = self._vertical_profile(mask_a)
         ys_b, lefts_b, rights_b = self._vertical_profile(mask_b)
@@ -383,14 +399,15 @@ class ImageProcessorV11:
 
         return bbox_a, bbox_b, mask_a, mask_b
 
-    def _joint_detect_debug(self, img_a, img_b, angle_mode="theilsen"):
+    def _joint_detect_debug(self, img_a, img_b, angle_mode="theilsen",
+                            stem_a=None, stem_b=None):
         """联合检测 + 收集每一步的调试图像。
         angle_mode: "theilsen" | "template" — 决定角度算法的调试输出。
         """
         debug = []
 
-        bbox_a, mask_a = self._single_pipe(img_a)
-        bbox_b, mask_b = self._single_pipe(img_b)
+        bbox_a, mask_a = self._single_pipe(img_a, stem=stem_a)
+        bbox_b, mask_b = self._single_pipe(img_b, stem=stem_b)
 
         # 1. AI 分割：rembg (u2net) -> Mask
         debug.append(("① AI分割(rembg) A", self._debug_mask_overlay(img_a, mask_a)))
