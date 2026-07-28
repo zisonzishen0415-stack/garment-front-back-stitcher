@@ -375,6 +375,18 @@ class ImageProcessorV11:
                     if j_bbox_b:
                         bbox_b = j_bbox_b
 
+        # v11.2: 人台脖子检测（几何）
+        if bbox_a:
+            bbox_a = self._trim_neck_top(img_a, mask_a, bbox_a)
+        if bbox_b:
+            bbox_b = self._trim_neck_top(img_b, mask_b, bbox_b)
+
+        # v11.3: HSV 人台颜色过滤
+        if bbox_a:
+            bbox_a, mask_a = self._filter_mannequin_hsv(img_a, mask_a, bbox_a)
+        if bbox_b:
+            bbox_b, mask_b = self._filter_mannequin_hsv(img_b, mask_b, bbox_b)
+
         # v11.1: 杆子底部裁剪
         if bbox_a:
             bbox_a = self._trim_rod_bottom(img_a, mask_a, bbox_a)
@@ -437,19 +449,43 @@ class ImageProcessorV11:
                                       self._debug_rod_compare(img_b, bbox_b, j_bbox_b)))
                         bbox_b = j_bbox_b
 
-        # 5. 杆子裁剪前后对比
+        # 5. 人台脖子检测（几何）
+        if bbox_a:
+            neck_bbox_a = self._trim_neck_top(img_a, mask_a, bbox_a)
+            if neck_bbox_a != bbox_a:
+                debug.append(("⑤ 脖子裁剪 A", self._debug_rod_compare(img_a, bbox_a, neck_bbox_a)))
+            bbox_a = neck_bbox_a
+        if bbox_b:
+            neck_bbox_b = self._trim_neck_top(img_b, mask_b, bbox_b)
+            if neck_bbox_b != bbox_b:
+                debug.append(("⑤ 脖子裁剪 B", self._debug_rod_compare(img_b, bbox_b, neck_bbox_b)))
+            bbox_b = neck_bbox_b
+
+        # 6. HSV 人台颜色过滤
+        if bbox_a:
+            hsv_bbox_a, mask_a_clean = self._filter_mannequin_hsv(img_a, mask_a, bbox_a)
+            if hsv_bbox_a != bbox_a:
+                debug.append(("⑥ HSV人台过滤 A", self._debug_rod_compare(img_a, bbox_a, hsv_bbox_a)))
+            bbox_a, mask_a = hsv_bbox_a, mask_a_clean
+        if bbox_b:
+            hsv_bbox_b, mask_b_clean = self._filter_mannequin_hsv(img_b, mask_b, bbox_b)
+            if hsv_bbox_b != bbox_b:
+                debug.append(("⑥ HSV人台过滤 B", self._debug_rod_compare(img_b, bbox_b, hsv_bbox_b)))
+            bbox_b, mask_b = hsv_bbox_b, mask_b_clean
+
+        # 7. 杆子裁剪
         if bbox_a:
             rod_bbox_a = self._trim_rod_bottom(img_a, mask_a, bbox_a)
             if rod_bbox_a != bbox_a:
-                debug.append(("⑤ CV杆子裁剪(橙=前绿=后) A", self._debug_rod_compare(img_a, bbox_a, rod_bbox_a)))
+                debug.append(("⑦ CV杆子裁剪(橙=前绿=后) A", self._debug_rod_compare(img_a, bbox_a, rod_bbox_a)))
             bbox_a = rod_bbox_a
         if bbox_b:
             rod_bbox_b = self._trim_rod_bottom(img_b, mask_b, bbox_b)
             if rod_bbox_b != bbox_b:
-                debug.append(("⑤ CV杆子裁剪(橙=前绿=后) B", self._debug_rod_compare(img_b, bbox_b, rod_bbox_b)))
+                debug.append(("⑦ CV杆子裁剪(橙=前绿=后) B", self._debug_rod_compare(img_b, bbox_b, rod_bbox_b)))
             bbox_b = rod_bbox_b
 
-        # 6. 自动角度 (依 angle_mode 切换)
+        # 8. 自动角度 (依 angle_mode 切换)
         angle_a = angle_b = 0.0
         if bbox_a and bbox_b:
             if angle_mode == "template":
@@ -457,11 +493,11 @@ class ImageProcessorV11:
             else:
                 self._debug_angle_theilsen(debug, img_a, img_b, mask_a, mask_b, bbox_a, bbox_b)
 
-        # 7. 最终 bbox
+        # 9. 最终 bbox
         if bbox_a:
-            debug.append(("⑦ 最终结果 A", self._debug_bbox_overlay(img_a, bbox_a, color=(0, 255, 0))))
+            debug.append(("⑨ 最终结果 A", self._debug_bbox_overlay(img_a, bbox_a, color=(0, 255, 0))))
         if bbox_b:
-            debug.append(("⑦ 最终结果 B", self._debug_bbox_overlay(img_b, bbox_b, color=(0, 255, 0))))
+            debug.append(("⑨ 最终结果 B", self._debug_bbox_overlay(img_b, bbox_b, color=(0, 255, 0))))
 
         return bbox_a, bbox_b, debug
 
@@ -828,6 +864,125 @@ class ImageProcessorV11:
         return img
 
 
+
+    def _trim_neck_top(self, img, mask_arr, bbox):
+        """几何检测人台脖子：从 bbox 顶部往下扫描，找到 mask 宽度突变点。
+        脖子区域窄（< bbox 宽度的 25%），衣服/肩膀区域宽（> 50%）。
+        检测到 窄→宽 突变后裁掉突变点以上的部分。
+        """
+        x1, y1, x2, y2 = bbox
+        bh = y2 - y1
+        bw = x2 - x1
+        if bh < 150 or bw < 60:
+            return bbox
+
+        region = mask_arr[y1:y2, :] > 30
+        row_counts = region.sum(axis=1)
+        n = len(row_counts)
+        if n < 30:
+            return bbox
+
+        # 向量化：取每行 mask 左右边界
+        w_full = mask_arr.shape[1]
+        lefts = np.argmax(region, axis=1)
+        rights = w_full - 1 - np.argmax(region[:, ::-1], axis=1)
+        widths = np.where(row_counts >= 5, rights - lefts, 0)
+
+        # 平滑
+        win = max(n // 40, 2)
+        kernel = np.ones(2 * win + 1) / (2 * win + 1)
+        smoothed = np.convolve(widths.astype(float), kernel, mode='same')
+        smoothed_norm = smoothed / bw  # 占 bbox 宽度的比例
+
+        # 从上往下扫描，找窄→宽突变
+        # 上半部分中位数作为参考宽度
+        upper_half = smoothed_norm[:n // 2]
+        if len(upper_half) < 20:
+            return bbox
+        body_ref = float(np.median(upper_half))
+        if body_ref < 0.10 or body_ref > 0.90:
+            return bbox  # 整体都窄或都宽，没有脖子
+
+        # 找第一次宽度显著扩展的点
+        seg_len = max(n // 15, 3)
+        cut_off = y1
+        for i in range(seg_len, n - seg_len):
+            seg_val = float(np.median(smoothed_norm[i:i + seg_len]))
+            # 当前段宽，但上方的段窄 → 脖子结束处
+            if seg_val > body_ref * 1.5 and seg_val > 0.30:
+                prev_val = float(np.median(smoothed_norm[max(0, i - 2 * seg_len):max(1, i - seg_len)]))
+                if prev_val < body_ref * 0.80 and prev_val < 0.25:
+                    # 确认突变点上方至少有 15px 窄区域
+                    cut_off = y1 + i - seg_len
+                    break
+
+        trimmed_h = cut_off - y1
+        if trimmed_h < 15 or trimmed_h > bh * 0.25:
+            return bbox  # 太少或太多都不裁
+
+        return (x1, cut_off, x2, y2)
+
+    def _filter_mannequin_hsv(self, img, mask_arr, bbox):
+        """HSV 颜色过滤：在 mask 上半部检测并去除人台肤色像素。
+
+        人台 HSV 范围来自参考图采样：低饱和度 + 暖色调 + 中高亮度。
+        只在 mask 上半部（可能裸露人台躯干的位置）过滤，不影响下部衣服区域。
+        过滤后重新计算 bbox。
+        """
+        x1, y1, x2, y2 = bbox
+        bh = y2 - y1
+        bw = x2 - x1
+        if bh < 200 or bw < 60:
+            return bbox, mask_arr
+
+        # 只检查 bbox 上半部 40%（人台躯干可能出现的区域）
+        upper_y2 = y1 + int(bh * 0.40)
+        h_img, w_img = mask_arr.shape
+
+        # 上半部前景像素不足 → 不做颜色判断
+        upper_region = mask_arr[y1:upper_y2, x1:x2] > 30
+        if upper_region.sum() < 200:
+            return bbox, mask_arr
+
+        # PIL HSV: H 0-255 (映射到 0-360°), S 0-255, V 0-255
+        img_hsv = img.convert('HSV')
+        hsv_arr = np.array(img_hsv, dtype=np.uint8)
+
+        # 人台颜色范围（来自 素材/人台/_mannequin_hsv.json）
+        H_LO, H_HI = 7, 28
+        S_LO, S_HI = 6, 29
+        V_LO, V_HI = 108, 249
+
+        # 上半部 mask 前景像素的 HSV 掩码
+        fg = mask_arr > 30
+        h_match = (hsv_arr[:, :, 0] >= H_LO) & (hsv_arr[:, :, 0] <= H_HI)
+        s_match = (hsv_arr[:, :, 1] >= S_LO) & (hsv_arr[:, :, 1] <= S_HI)
+        v_match = (hsv_arr[:, :, 2] >= V_LO) & (hsv_arr[:, :, 2] <= V_HI)
+        mannequin_mask = h_match & s_match & v_match & fg
+
+        # 上半部人台像素占比
+        upper_fg = fg[y1:upper_y2, :]
+        upper_mannequin = mannequin_mask[y1:upper_y2, :]
+        if upper_fg.sum() < 1:
+            return bbox, mask_arr
+        mannequin_ratio = upper_mannequin.sum() / upper_fg.sum()
+
+        # 只有人台像素占上半部前景 20% 以上时才过滤（避免误伤浅色衣服）
+        if mannequin_ratio < 0.20:
+            return bbox, mask_arr
+
+        # 从 mask 中去除人台像素
+        cleaned = mask_arr.copy()
+        cleaned[mannequin_mask] = 0
+
+        # 从清理后的 mask 重新计算 bbox
+        rows, cols = np.where(cleaned > 30)
+        if len(rows) < 100:
+            return bbox, mask_arr  # 清理后前景太少，回退
+        new_bbox = (int(cols.min()), int(rows.min()),
+                     int(cols.max()), int(rows.max()))
+
+        return new_bbox, cleaned
 
     def _trim_rod_bottom(self, img, mask_arr, bbox):
         """基于 mask 宽度占比裁剪杆子/人台底部。
