@@ -26,7 +26,8 @@ import numpy as np
 from PIL import Image, ImageOps, ImageTk
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif"}
-MASK_ALPHA = 100       # 红色叠加层透明度 (0-255, PIL RGBA)
+MASK_ALPHA = 100        # 红色叠加层透明度 (0-255, PIL RGBA)
+BRUSH_COLOR = "#00BFFF"  # 笔刷光标颜色
 BRUSH_DEFAULT = 40
 
 
@@ -48,6 +49,8 @@ class MaskCanvas(tk.Canvas):
         self._photo = None
         self._overlay_photo = None
         self._brush_radius = BRUSH_DEFAULT
+        self._cursor_x = 0       # 鼠标画布坐标（光标跟随）
+        self._cursor_y = 0
         self._mode = None          # 'erase' | 'restore' | 'pan'
         self._last_brush_x = 0
         self._last_brush_y = 0
@@ -66,6 +69,7 @@ class MaskCanvas(tk.Canvas):
         self.bind("<B2-Motion>",      self._on_pan_move)
         self.bind("<MouseWheel>",     self._on_wheel)
         self.bind("<Configure>",      self._on_configure)
+        self.bind("<Motion>",         self._on_cursor_move)
 
     # ── 坐标转换 ────────────────────────────────────────────────
 
@@ -86,6 +90,7 @@ class MaskCanvas(tk.Canvas):
 
     def set_brush(self, radius):
         self._brush_radius = max(3, min(200, radius))
+        self._draw_cursor()
 
     def reset_mask(self):
         if self._original_mask is not None:
@@ -119,7 +124,7 @@ class MaskCanvas(tk.Canvas):
         self._redraw()
 
     def _redraw(self):
-        """完整重绘：背景图 + mask 叠加层"""
+        """完整重绘：背景图 + mask 叠加层 + 光标（切换图片/缩放/平移时调用）。"""
         self.delete("all")
         if not self.pil_img:
             return
@@ -132,22 +137,52 @@ class MaskCanvas(tk.Canvas):
         self._photo = ImageTk.PhotoImage(disp)
         self.create_image(self.ox, self.oy, anchor=tk.NW, image=self._photo, tags="bg")
 
+        self._redraw_overlay()
+
+    def _redraw_overlay(self):
+        """只重绘叠加层 + 光标（涂抹时调用，不重建背景图）。"""
+        self.delete("overlay", "cursor")
+        if self.mask_arr is None:
+            return
+        iw, ih = self.pil_img.size
+        dw = max(1, int(iw * self.scale))
+        dh = max(1, int(ih * self.scale))
+
         # mask 半透明红色叠加
-        if self.mask_arr is not None:
-            h, w = self.mask_arr.shape
-            if (dw, dh) != (w, h):
-                mask_sm = np.array(
-                    Image.fromarray(self.mask_arr).resize((dw, dh), Image.BILINEAR))
-            else:
-                mask_sm = self.mask_arr
-            overlay = np.zeros((dh, dw, 4), dtype=np.uint8)
-            fg = mask_sm > 128
-            overlay[fg, 0] = 255       # R
-            overlay[fg, 3] = MASK_ALPHA  # A
-            self._overlay_photo = ImageTk.PhotoImage(
-                Image.fromarray(overlay, 'RGBA'))
-            self.create_image(self.ox, self.oy, anchor=tk.NW,
-                              image=self._overlay_photo, tags="overlay")
+        h, w = self.mask_arr.shape
+        if (dw, dh) != (w, h):
+            mask_sm = np.array(
+                Image.fromarray(self.mask_arr).resize((dw, dh), Image.BILINEAR))
+        else:
+            mask_sm = self.mask_arr
+        overlay = np.zeros((dh, dw, 4), dtype=np.uint8)
+        fg = mask_sm > 128
+        overlay[fg, 0] = 255       # R
+        overlay[fg, 3] = MASK_ALPHA  # A
+        self._overlay_photo = ImageTk.PhotoImage(
+            Image.fromarray(overlay, 'RGBA'))
+        self.create_image(self.ox, self.oy, anchor=tk.NW,
+                          image=self._overlay_photo, tags="overlay")
+
+        # 笔刷光标圆
+        self._draw_cursor()
+
+    def _draw_cursor(self):
+        """绘制笔刷光标：圆圈轮廓，显示当前笔刷大小。"""
+        self.delete("cursor")
+        if self.pil_img is None:
+            return
+        r = max(3, int(self._brush_radius / self.scale))
+        x, y = self._cursor_x, self._cursor_y
+        self.create_oval(x - r, y - r, x + r, y + r,
+                         outline=BRUSH_COLOR, width=2, tags="cursor")
+
+    def _on_cursor_move(self, event):
+        self._cursor_x = event.x
+        self._cursor_y = event.y
+        if self.pil_img is None:
+            return
+        self._draw_cursor()
 
     def _on_configure(self, event):
         self._fit()
@@ -172,14 +207,16 @@ class MaskCanvas(tk.Canvas):
 
     def _start_brush(self, event, mode):
         self._mode = mode
-        self._last_brush_x = event.x
-        self._last_brush_y = event.y
+        self._cursor_x = self._last_brush_x = event.x
+        self._cursor_y = self._last_brush_y = event.y
         self._apply_brush(event.x, event.y, mode == 'erase')
-        self._redraw()
+        self._redraw_overlay()
 
     def _on_brush(self, event):
         if self._mode not in ('erase', 'restore'):
             return
+        self._cursor_x = event.x
+        self._cursor_y = event.y
         # 沿线段插值，避免快速拖拽时空隙
         dx = event.x - self._last_brush_x
         dy = event.y - self._last_brush_y
@@ -196,7 +233,7 @@ class MaskCanvas(tk.Canvas):
             self._apply_brush(event.x, event.y, erase)
         self._last_brush_x = event.x
         self._last_brush_y = event.y
-        self._redraw()
+        self._redraw_overlay()
         if self._on_changed:
             self._on_changed()
 
