@@ -172,7 +172,7 @@ class MaskCanvas(tk.Canvas):
         self.delete("cursor")
         if self.pil_img is None:
             return
-        r = max(3, int(self._brush_radius / self.scale))
+        r = max(3, int(self._brush_radius * self.scale))
         x, y = self._cursor_x, self._cursor_y
         self.create_oval(x - r, y - r, x + r, y + r,
                          outline=BRUSH_COLOR, width=2, tags="cursor")
@@ -195,7 +195,7 @@ class MaskCanvas(tk.Canvas):
             return
         ix, iy = self._to_image(cx, cy)
         h, w = self.mask_arr.shape
-        r = max(1, int(self._brush_radius / self.scale))
+        r = max(1, self._brush_radius)
         y1, y2 = max(0, iy - r), min(h, iy + r + 1)
         x1, x2 = max(0, ix - r), min(w, ix + r + 1)
         if y1 >= y2 or x1 >= x2:
