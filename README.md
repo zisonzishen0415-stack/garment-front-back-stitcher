@@ -223,11 +223,104 @@ annotations.json 存在且完整？
 
 ---
 
-## 技术栈
+## Mask 标注工具
+
+将 rembg 误识别的人台/杆子区域从 mask 中擦除，训练微调模型的前置步骤。
+
+### 启动
+
+```bash
+python mask_annotator.py <素材目录>
+```
+
+### 操作
+
+| 操作 | 效果 |
+|------|------|
+| 左键拖拽 | 擦除 mask（涂抹区域变透明，红色消失） |
+| 右键拖拽 | 恢复 mask（被误擦的衣服区域） |
+| ← → / ◀ ▶ | 上一张 / 下一张（**自动保存**） |
+| S / Enter | 仅保存，不切换 |
+| R | 重置为原始 rembg mask |
+| F | 适应窗口 |
+| Ctrl + 滚轮 / `[` `]` | 笔刷大小 ±5 |
+| 中键拖拽 | 平移视图 |
+| Escape | 退出 |
+
+### 输出
+
+每张图保存为 `<原图文件名>_mask.png`（灰度 PNG：白色=保留，黑色=排除）。
+reviewer 的 AI 处理会**自动检测并使用**——存在 `_mask.png` 时跳过 rembg。
+
+---
+
+## U-2-Net 微调
+
+用人手标注的 mask 数据微调前景分割模型，替代 rembg 的通用 u2net。
+
+### 标注数据准备
+
+1. 用 `mask_annotator.py` 在素材目录中逐张擦除人台/杆子区域
+2. 标完后，`*_mask.png` 与对应原图在同一目录下即为可用数据
+3. 支持多目录合并训练（逗号分隔）
+
+### 训练
+
+```bash
+# 首次微调（从 HuggingFace 预训练权重开始）
+python train_u2net.py --data "素材/7-21p图" --epochs 30 --batch 4
+
+# 从微调模型继续训练（更多标注数据）
+python train_u2net.py --data "素材/7-21p图,素材/微调标注" --epochs 20 --batch 4 --lr 5e-6
+
+# 断点续训
+python train_u2net.py --data "素材/7-21p图" --epochs 30 --batch 4 --resume models/ckpt_epoch10.pt
+```
+
+### 参数
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--data` | `素材/7-21p图` | 标注数据目录（逗号分隔多目录） |
+| `--epochs` | 30 | 训练轮数 |
+| `--batch` | 8 | batch size（4GB VRAM 用 4） |
+| `--size` | 320 | 输入分辨率 |
+| `--lr` | 1e-5 | 学习率 |
+| `--resume` | — | 从检查点续训（恢复 optimizer 状态） |
+| `--pretrained` | — | 预训练权重路径（默认自动下载 HF） |
+| `--save-every` | 10 | 每 N 轮保存检查点 |
+| `--no-augment` | — | 禁用数据增强（续训后期数据量够时可用） |
+
+### 输出
+
+| 文件 | 说明 |
+|------|------|
+| `models/best.pt` | 最佳模型权重（PyTorch） |
+| `models/u2net_finetuned.onnx` | 导出为 ONNX 格式 |
+| `models/ckpt_epochN.pt` | 每 N 轮检查点（含 optimizer 状态，可续训） |
+
+### 使用
+
+`processor_v11.py` 在启动时自动检测 `models/u2net_finetuned.onnx`：
+
+```
+存在 → 用微调模型跑 mask（跳过 rembg）
+不存在 → 回退到 rembg 原始 u2net
+```
+
+无需额外配置。reviewer 打开即用微调模型。
+
+### 训练数据
+
+| 轮次 | 数据量 | 起点 loss | 最佳 loss | 说明 |
+|------|--------|-----------|-----------|------|
+| Round 1 | 85 对 | 0.117 | 0.042 | 从 HF 预训练权重开始 |
+| Round 2 | 211 对 | 0.080 | 训练中 | 从 Round 1 最佳模型继续，追加 131 对 |
 
 | 组件 | 用途 |
 |------|------|
-| **rembg** (u2net.onnx) | AI 前景分割，底层 onnxruntime 推理 |
+| **rembg / u2net.onnx** | AI 前景分割，默认 onnxruntime 推理 |
+| **U-2-Net 微调** | PyTorch 微调管线，用标注数据训练自定义分割模型 → 导出 ONNX |
 | **onnxruntime** | ONNX 模型推理引擎 |
 | **Pillow** | 图像读取/裁切/旋转/拼接/EXIF |
 | **NumPy** | mask 数组运算、统计拟合、手写旋转 |
@@ -243,18 +336,20 @@ annotations.json 存在且完整？
 ## 目录结构
 
 ```
-├── reviewer.py            # 审核编辑 GUI (主入口)
-├── processor_v11.py        # AI+CV 检测核心 + 双角度算法
-├── liquify.py              # PS 风格液化修图工具
-├── annotator.py            # 手动标注工具
-├── batch_manual.py         # 基于标注的批量导出
-├── gui.py / main.py        # 旧版 GUI
-├── build_icon.py           # logo.svg → PNG/ICO 渲染
-├── garment-stitcher.spec   # PyInstaller 打包配置
-├── installer.nsi           # NSIS 安装程序脚本
-├── requirements.txt        # Python 依赖
-├── logo.svg                # 品牌源文件
-├── CLAUDE.md               # AI 开发参考
+├── reviewer.py              # 审核编辑 GUI (主入口)
+├── processor_v11.py         # AI+CV 检测核心 + 双角度算法
+├── liquify.py               # PS 风格液化修图工具
+├── annotator.py             # 手动 BBox 标注工具
+├── mask_annotator.py        # Mask 画笔标注工具（擦除人台区域）
+├── train_u2net.py           # U-2-Net 微调训练管线
+├── batch_manual.py          # 基于标注的批量导出
+├── gui.py / main.py         # 旧版 GUI
+├── build_icon.py            # logo.svg → PNG/ICO 渲染
+├── garment-stitcher.spec    # PyInstaller 打包配置
+├── installer.nsi            # NSIS 安装程序脚本
+├── requirements.txt         # Python 依赖
+├── logo.svg                 # 品牌源文件
+├── CLAUDE.md                # AI 开发参考
 └── README.md
 ```
 
