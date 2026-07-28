@@ -129,6 +129,17 @@ class ImageProcessorV11:
                     return (int(cols.min()), int(rows.min()),
                             int(cols.max()), int(rows.max())), mask_arr
 
+        # 优先使用微调模型
+        ft_model = Path(__file__).parent / "models" / "u2net_finetuned.onnx"
+        if ft_model.exists():
+            mask_arr = self._run_mask_onnx(img, str(ft_model))
+            if mask_arr is not None:
+                rows, cols = np.where(mask_arr > 30)
+                if len(rows) >= 100:
+                    return (int(cols.min()), int(rows.min()),
+                            int(cols.max()), int(rows.max())), mask_arr
+
+        # 回退到 rembg
         enhanced = ImageEnhance.Contrast(img).enhance(1.4)
         from rembg import remove
         mask = remove(enhanced, session=self._get_session(), only_mask=True)
@@ -145,6 +156,23 @@ class ImageProcessorV11:
         bbox = (int(cols.min()), int(rows.min()),
                 int(cols.max()), int(rows.max()))
         return bbox, mask_arr
+
+    def _run_mask_onnx(self, img: Image.Image, model_path: str) -> Optional[np.ndarray]:
+        """用微调 ONNX 模型跑 mask 推理。返回 uint8 mask 数组或 None。"""
+        import onnxruntime as ort
+
+        # 输入预处理：resize → normalize [0,1] → NCHW
+        in_w, in_h = 320, 320
+        img_rs = img.resize((in_w, in_h), Image.BILINEAR)
+        arr = np.array(img_rs, dtype=np.float32).transpose(2, 0, 1)[np.newaxis] / 255.0
+
+        sess = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+        out = sess.run(None, {"input": arr.astype(np.float32)})[0]
+
+        # 后处理：resize 回原图分辨率 → uint8
+        mask_pred = Image.fromarray((out[0, 0] * 255).astype(np.uint8))
+        mask_pred = mask_pred.resize(img.size, Image.BILINEAR)
+        return np.array(mask_pred)
 
     def _single_pipe_bbox(self, img: Image.Image):
         """向后兼容：只返回 bbox。新代码请用 _single_pipe。"""

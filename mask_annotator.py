@@ -287,7 +287,8 @@ class MaskAnnotator(tk.Tk):
         self.src = Path(source_dir).resolve()
         self.files = sorted(
             [f for f in self.src.iterdir()
-             if f.is_file() and f.suffix.lower() in IMAGE_EXTS],
+             if f.is_file() and f.suffix.lower() in IMAGE_EXTS
+             and "_mask" not in f.stem],   # 排除 _mask.png 本身
             key=lambda f: f.name)
         if not self.files:
             print("未找到支持的图片文件"); self.destroy(); return
