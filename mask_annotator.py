@@ -376,6 +376,22 @@ class MaskAnnotator(tk.Tk):
 
     # ── rembg 后台 ──────────────────────────────────────────────
 
+    def _run_mask(self, img: Image.Image):
+        """运行 mask 推理。微调模型优先，回退 rembg。"""
+        ft_model = Path(__file__).parent / "models" / "u2net_finetuned.onnx"
+        if ft_model.exists():
+            import onnxruntime as ort
+            in_w, in_h = 320, 320
+            img_rs = img.resize((in_w, in_h), Image.BILINEAR)
+            arr = np.array(img_rs, dtype=np.float32).transpose(2, 0, 1)[np.newaxis] / 255.0
+            sess = ort.InferenceSession(str(ft_model), providers=["CPUExecutionProvider"])
+            out = sess.run(None, {"input": arr.astype(np.float32)})[0]
+            mask_pred = Image.fromarray((out[0, 0] * 255).astype(np.uint8))
+            return mask_pred.resize(img.size, Image.BILINEAR)
+        else:
+            from rembg import remove
+            return remove(img, session=self._get_session(), only_mask=True)
+
     def _get_session(self):
         if self._session is None:
             from rembg import new_session
@@ -390,8 +406,7 @@ class MaskAnnotator(tk.Tk):
                     continue
                 try:
                     img = ImageOps.exif_transpose(Image.open(f)).convert("RGB")
-                    from rembg import remove
-                    mask = remove(img, session=self._get_session(), only_mask=True)
+                    mask = self._run_mask(img)
                     if mask.size != img.size:
                         mask = mask.resize(img.size, Image.LANCZOS)
                     self._masks[f.name] = np.array(mask)
