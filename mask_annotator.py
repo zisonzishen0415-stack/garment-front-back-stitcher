@@ -435,6 +435,7 @@ class MaskAnnotator(tk.Tk):
         Image.fromarray(self.canvas.mask_arr).save(mp, "PNG")
         self._mask_files[f.name] = True
         self._dirty = False
+        self._update_status()
 
     # ── 导航 ────────────────────────────────────────────────────
 
@@ -481,6 +482,7 @@ class MaskAnnotator(tk.Tk):
         self.lbl_info.configure(text=f"笔刷: {r}px  |  {mod}")
 
     def _on_close(self):
+        self._save()
         self.destroy()
 
 
