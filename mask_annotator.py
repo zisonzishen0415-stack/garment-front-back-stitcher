@@ -4,16 +4,16 @@
     python mask_annotator.py <素材目录>
 
 操作:
-    左键拖拽      擦除 mask（变透明）
+    鼠标拖拽      擦除 mask（变透明）
     右键拖拽      恢复 mask
     滚轮          缩放
     Ctrl + 滚轮   笔刷大小 ±5
     [ / ]         笔刷大小 ±5
     中键拖拽      平移
-    S / Enter     保存并跳到下一张
+    ← → / ◀ ▶   上一张 / 下一张（自动保存）
+    S / Enter     保存当前
     R             重置为原始 rembg mask
     F             适应窗口
-    ← →          上一张 / 下一张
     Escape        退出
 """
 
@@ -330,7 +330,7 @@ class MaskAnnotator(tk.Tk):
         tk.Frame(bar, width=1, height=24, bg="#555").pack(side="left", padx=10)
         tk.Button(bar, text="重置 (R)",
                   command=self._reset).pack(side="left", padx=2)
-        tk.Button(bar, text="保存并下一张 (S)", command=self._save_next,
+        tk.Button(bar, text="保存 (S)", command=self._save,
                   bg="#2B8C3C", fg="white").pack(side="left", padx=2)
 
         tk.Frame(bar, width=1, height=24, bg="#555").pack(side="left", padx=10)
@@ -360,9 +360,9 @@ class MaskAnnotator(tk.Tk):
     # ── 快捷键 ──────────────────────────────────────────────────
 
     def _bind_keys(self):
-        self.bind("<s>", lambda e: self._save_next())
-        self.bind("<S>", lambda e: self._save_next())
-        self.bind("<Return>", lambda e: self._save_next())
+        self.bind("<s>", lambda e: self._save())
+        self.bind("<S>", lambda e: self._save())
+        self.bind("<Return>", lambda e: self._save())
         self.bind("<r>", lambda e: self._reset())
         self.bind("<R>", lambda e: self._reset())
         self.bind("<f>", lambda e: self.canvas._fit())
@@ -436,23 +436,17 @@ class MaskAnnotator(tk.Tk):
         self._mask_files[f.name] = True
         self._dirty = False
 
-    def _save_next(self):
-        self._save()
-        if self.idx < len(self.files) - 1:
-            self.idx += 1
-            self._load_current()
-        else:
-            self._update_status()
-
     # ── 导航 ────────────────────────────────────────────────────
 
     def _next(self):
         if self.idx < len(self.files) - 1:
+            self._save()
             self.idx += 1
             self._load_current()
 
     def _prev(self):
         if self.idx > 0:
+            self._save()
             self.idx -= 1
             self._load_current()
 
