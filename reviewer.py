@@ -218,19 +218,20 @@ class BBoxEditor(tk.Canvas):
                 best, best_d = tag, d
         return best
 
-    def _hit_rotation_handle(self, cx, cy):
-        """检测鼠标是否在框外靠近角点（PS 风格旋转区域）。
-        框内 = 平移，角点上 = resize，框外近角点 = 旋转。
-        """
+    def _hit_rotation_zone(self, cx, cy):
+        """框外角点附近 = 旋转区域。距离角点 15~50px 的环形区域。"""
         if not hasattr(self, '_corner_canvas_pos'):
             return False
-        # 如果鼠标在框内或已命中 resize 区域 → 不是旋转
-        if self._poly_contains(cx, cy) or self._hit_corner(cx, cy) or self._hit_edge(cx, cy):
+        # 框内 → 不是旋转
+        if self._poly_contains(cx, cy):
             return False
-        # 靠近任意角点外侧 → 旋转
+        # 角点命中 → resize，不是旋转
+        if self._hit_corner(cx, cy):
+            return False
+        # 框外且靠近角点 → 旋转
         for ccx, ccy in self._corner_canvas_pos:
             d = ((cx - ccx) ** 2 + (cy - ccy) ** 2) ** 0.5
-            if d <= 40:  # generous hit zone outside corners
+            if d <= 50:
                 return True
         return False
 
@@ -273,10 +274,8 @@ class BBoxEditor(tk.Canvas):
         """鼠标移动：检测旋转区域并切换光标。"""
         if self._drag:
             return
-        if self._hit_rotation_handle(event.x, event.y):
-            self.configure(cursor="exchange")  # ↔ 旋转提示
-        elif self._hit_corner(event.x, event.y):
-            self.configure(cursor="")          # 默认（resize）
+        if self._hit_rotation_zone(event.x, event.y):
+            self.configure(cursor="double_arrow")
         else:
             self.configure(cursor="")
 
@@ -297,7 +296,7 @@ class BBoxEditor(tk.Canvas):
         self._preview_deferred = False
 
         # 旋转区域优先（角点外侧 6-30px）
-        if self._hit_rotation_handle(event.x, event.y):
+        if self._hit_rotation_zone(event.x, event.y):
             self._drag = "rotate"
             self._drag_sx, self._drag_sy = event.x, event.y
             self._drag_angle = self.angle
@@ -338,7 +337,10 @@ class BBoxEditor(tk.Canvas):
             if event.state & 0x1:
                 delta = round(delta / 15) * 15
             self.angle = self._drag_angle + delta
-            self._draw_overlay()   # 旋转不节流，确保即时跟手
+            now = time.perf_counter()
+            if now - self._last_redraw >= 0.016:
+                self._draw_overlay()
+                self._last_redraw = now
             if self._on_change:
                 self._preview_deferred = True
             return
