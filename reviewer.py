@@ -56,6 +56,7 @@ class BBoxEditor(tk.Canvas):
         self._drag_sx = 0
         self._drag_sy = 0
         self._drag_box = None
+        self._drag_angle = 0.0
         self._pan_data = None
         self._on_change = on_change
         self._last_fit_w = 0
@@ -261,8 +262,16 @@ class BBoxEditor(tk.Canvas):
         self._drag_box = None
         self._preview_deferred = False
 
+        ctrl = (event.state & 0x4) != 0  # Ctrl 键
         h = self._hit_corner(event.x, event.y)
         if h:
+            if ctrl:
+                # Ctrl+角点拖拽 = 旋转
+                self._drag = "rotate"
+                self._drag_sx, self._drag_sy = event.x, event.y
+                self._drag_angle = self.angle
+                self._defer_preview = True
+                return
             self._drag = h
             self._drag_sx, self._drag_sy = event.x, event.y
             self._drag_box = list(self.bbox)
@@ -282,7 +291,29 @@ class BBoxEditor(tk.Canvas):
             self._defer_preview = True
 
     def _on_move(self, event):
-        if not self._drag or self._drag_box is None: return
+        if not self._drag: return
+
+        # Ctrl+角点拖拽 = 绕 bbox 中心旋转
+        if self._drag == "rotate":
+            cx = (self.bbox[0] + self.bbox[2]) / 2
+            cy = (self.bbox[1] + self.bbox[3]) / 2
+            ccx, ccy = self._to_canvas(cx, cy)
+            angle_start = math.atan2(self._drag_sy - ccy, self._drag_sx - ccx)
+            angle_now = math.atan2(event.y - ccy, event.x - ccx)
+            delta = math.degrees(angle_now - angle_start)
+            # 按住 Shift 时对齐到 15° 整角
+            if event.state & 0x1:
+                delta = round(delta / 15) * 15
+            self.angle = self._drag_angle + delta
+            now = time.perf_counter()
+            if now - self._last_redraw >= 0.016:
+                self._draw_overlay()
+                self._last_redraw = now
+            if self._on_change:
+                self._preview_deferred = True
+            return
+
+        if self._drag_box is None: return
         dx = (event.x - self._drag_sx) / self.scale
         dy = (event.y - self._drag_sy) / self.scale
         # 反旋转到轴对齐
