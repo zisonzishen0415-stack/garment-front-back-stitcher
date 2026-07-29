@@ -127,7 +127,7 @@ class BBoxEditor(tk.Canvas):
     PLACEHOLDER_W = 220  # 统一定宽，三区域尺寸一致
 
     def _redraw(self):
-        """完整重绘：旋转背景图 + 轴对齐绿框叠加层。切图/缩放/旋转时调用。"""
+        """完整重绘：重建 bg + overlay。切图/缩放/平移时调用。"""
         self.delete("all")
         if not self.pil_img:
             ph = self._placeholder
@@ -141,13 +141,17 @@ class BBoxEditor(tk.Canvas):
                 self.create_image(cw // 2, ch // 2, anchor=tk.CENTER, image=self._photo)
             return
 
+        self._update_bg()
+        self._draw_overlay()
+
+    def _update_bg(self):
+        """仅更新背景图 PhotoImage。旋转拖拽时调用此方法 + _draw_overlay。"""
         iw, ih = self.pil_img.size
         dw, dh = max(1, int(iw * self.scale)), max(1, int(ih * self.scale))
         cache_key = (self.scale, self.angle, dw, dh)
         if (self._display_cache is None
                 or getattr(self, '_cache_key', None) != cache_key):
             if abs(self.angle) > 0.005:
-                # 先缩小再旋转（小图旋转远快于大图旋转）
                 base = self.pil_img.resize((dw, dh), Image.BILINEAR)
                 self._display_cache = base.rotate(self.angle, Image.BICUBIC,
                                                   expand=False, fillcolor=(30, 30, 30))
@@ -157,6 +161,10 @@ class BBoxEditor(tk.Canvas):
         self._photo = ImageTk.PhotoImage(self._display_cache)
         self.create_image(self.ox, self.oy, anchor=tk.NW, image=self._photo, tags="bg")
 
+    def _redraw_rotation_frame(self):
+        """旋转拖拽帧更新：替换背景图 + 重绘叠加层（不 delete all）。"""
+        self.delete("bg", "overlay")
+        self._update_bg()
         self._draw_overlay()
 
     def _draw_overlay(self):
@@ -334,7 +342,7 @@ class BBoxEditor(tk.Canvas):
             self.angle = max(-45, min(45, round(raw * 2) / 2))
             now = time.perf_counter()
             if now - self._last_redraw >= 0.016:
-                self._redraw()
+                self._redraw_rotation_frame()
                 self._last_redraw = now
             if self._on_change:
                 self._preview_deferred = True
