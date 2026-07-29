@@ -31,6 +31,11 @@ if not _u2net.exists():
     raise SystemExit(f"模型文件不存在: {_u2net}\n请先运行: mkdir models && cp ~/.u2net/u2net.onnx models/")
 _datas.append((str(_u2net), 'models'))
 
+# 微调模型（如果存在则打包）
+_ft_model = PROJECT / 'models' / 'u2net_finetuned.onnx'
+if _ft_model.exists():
+    _datas.append((str(_ft_model), 'models'))
+
 a = Analysis(
     ['reviewer.py'],
     pathex=[],
