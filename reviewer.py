@@ -275,12 +275,13 @@ class BBoxEditor(tk.Canvas):
         if self._drag:
             return
         if self._hit_rotation_zone(event.x, event.y):
-            self.configure(cursor="double_arrow")
+            self.configure(cursor="fleur")
         else:
             self.configure(cursor="")
 
     def _clear_hover(self):
         self.configure(cursor="")
+        self.winfo_toplevel().configure(cursor="")
 
     # ── 鼠标事件 ──────────────────────────────────────────────
 
@@ -295,12 +296,13 @@ class BBoxEditor(tk.Canvas):
         self._drag_box = None
         self._preview_deferred = False
 
-        # 旋转区域优先（角点外侧 6-30px）
+        # 旋转区域
         if self._hit_rotation_zone(event.x, event.y):
             self._drag = "rotate"
             self._drag_sx, self._drag_sy = event.x, event.y
             self._drag_angle = self.angle
             self._defer_preview = True
+            self.winfo_toplevel().configure(cursor="fleur")
             return
         h = self._hit_corner(event.x, event.y)
         if h:
@@ -325,7 +327,7 @@ class BBoxEditor(tk.Canvas):
     def _on_move(self, event):
         if not self._drag: return
 
-        # 旋转手柄拖拽 = 绕 bbox 中心旋转
+        # 旋转：绕 bbox 中心旋转
         if self._drag == "rotate":
             cx = (self.bbox[0] + self.bbox[2]) / 2
             cy = (self.bbox[1] + self.bbox[3]) / 2
@@ -333,10 +335,10 @@ class BBoxEditor(tk.Canvas):
             angle_start = math.atan2(self._drag_sy - ccy, self._drag_sx - ccx)
             angle_now = math.atan2(event.y - ccy, event.x - ccx)
             delta = math.degrees(angle_now - angle_start)
-            # 按住 Shift 时对齐到 15° 整角
-            if event.state & 0x1:
+            if event.state & 0x1:  # Shift
                 delta = round(delta / 15) * 15
-            self.angle = self._drag_angle + delta
+            raw = self._drag_angle + delta
+            self.angle = max(-45, min(45, round(raw * 2) / 2))
             now = time.perf_counter()
             if now - self._last_redraw >= 0.016:
                 self._draw_overlay()
@@ -384,8 +386,11 @@ class BBoxEditor(tk.Canvas):
 
     def _on_up(self, event):
         was_dragging = self._drag is not None
+        was_rotating = self._drag == "rotate"
         self._drag = None
         self._drag_box = None
+        if was_rotating:
+            self.winfo_toplevel().configure(cursor="")
         if self._defer_preview:
             self._defer_preview = False
             if was_dragging:
@@ -1172,7 +1177,10 @@ class ReviewerApp(ctk.CTk):
 
     def _on_bbox_changed(self):
         self.bbox_a = list(self.editor_a.bbox); self.bbox_b = list(self.editor_b.bbox)
-        self._liquified = None  # bbox 变了，液化结果作废
+        self.angle_a = self.editor_a.angle; self.angle_b = self.editor_b.angle
+        self.lbl_angle_a.configure(text=f"{self.angle_a:+.1f}°")
+        self.lbl_angle_b.configure(text=f"{self.angle_b:+.1f}°")
+        self._liquified = None
         self._update_preview()
         self._auto_save_debounce()
 
