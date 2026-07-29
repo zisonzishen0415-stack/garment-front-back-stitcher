@@ -124,24 +124,12 @@ class BBoxEditor(tk.Canvas):
     def _to_image(self, cx, cy):
         return (int((cx - self.ox) / self.scale), int((cy - self.oy) / self.scale))
 
-    def _rotated_corners(self, b, angle_deg):
-        cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
-        rad = math.radians(angle_deg)
-        cos_a, sin_a = math.cos(rad), math.sin(rad)
-        corners = [(b[0], b[1]), (b[2], b[1]), (b[2], b[3]), (b[0], b[3])]
-        rotated = []
-        for x, y in corners:
-            dx, dy = x - cx, y - cy
-            rotated.append((cx + dx * cos_a - dy * sin_a, cy + dx * sin_a + dy * cos_a))
-        return rotated
-
     PLACEHOLDER_W = 220  # 统一定宽，三区域尺寸一致
 
     def _redraw(self):
-        """完整重绘：背景图 + 叠加层。切图/缩放时调用。"""
+        """完整重绘：旋转背景图 + 轴对齐绿框叠加层。切图/缩放/旋转时调用。"""
         self.delete("all")
         if not self.pil_img:
-            # 空编辑器：显示品牌 logo 居中
             ph = self._placeholder
             if ph is not None:
                 cw = max(self.winfo_width(), 50)
@@ -153,129 +141,133 @@ class BBoxEditor(tk.Canvas):
                 self.create_image(cw // 2, ch // 2, anchor=tk.CENTER, image=self._photo)
             return
 
-        # 背景图 — BILINEAR 显示级缩放 + 缓存
         iw, ih = self.pil_img.size
         dw, dh = max(1, int(iw * self.scale)), max(1, int(ih * self.scale))
-        if (self._display_cache is None or self._display_cache_scale != self.scale
-                or self._display_cache_size != (dw, dh)):
-            self._display_cache = self.pil_img.resize((dw, dh), Image.BILINEAR)
-            self._display_cache_scale = self.scale
-            self._display_cache_size = (dw, dh)
+        cache_key = (self.scale, self.angle)
+        if (self._display_cache is None
+                or getattr(self, '_cache_key', None) != cache_key):
+            if abs(self.angle) > 0.005:
+                base = self.pil_img.rotate(self.angle, Image.BICUBIC,
+                                           expand=False, fillcolor=(30, 30, 30))
+            else:
+                base = self.pil_img
+            self._display_cache = base.resize((dw, dh), Image.BILINEAR)
+            self._cache_key = cache_key
         self._photo = ImageTk.PhotoImage(self._display_cache)
         self.create_image(self.ox, self.oy, anchor=tk.NW, image=self._photo, tags="bg")
 
         self._draw_overlay()
 
     def _draw_overlay(self):
-        """只重绘叠加层（绿框 + 控制点 + AI 虚线）。拖拽时调用此方法，避免重建背景图。"""
+        """轴对齐绿框 + 控制点（背景图已旋转，绿框不再旋转）。"""
         self.delete("overlay")
+
+        if self.ai_bbox:
+            self._draw_rect(self.ai_bbox, AI_COLOR, 1, (4, 8))
+
+        x1, y1, x2, y2 = self.bbox
+        cx1, cy1 = self._to_canvas(x1, y1)
+        cx2, cy2 = self._to_canvas(x2, y2)
 
         # AI bbox（灰虚线）
         if self.ai_bbox:
-            self._draw_poly(self.ai_bbox, 0.0, AI_COLOR, 1, (4, 8))
+            ax1, ay1, ax2, ay2 = self.ai_bbox
+            acx1, acy1 = self._to_canvas(ax1, ay1)
+            acx2, acy2 = self._to_canvas(ax2, ay2)
+            self.create_rectangle(acx1, acy1, acx2, acy2,
+                                  outline=AI_COLOR, width=1, dash=(4, 8), tags="overlay")
 
         # 当前 bbox（绿实线）
-        self._draw_poly(self.bbox, self.angle, BOX_COLOR, 2)
+        self.create_rectangle(cx1, cy1, cx2, cy2,
+                              outline=BOX_COLOR, width=2, tags="overlay")
 
-        # 控制点
-        corners = self._rotated_corners(self.bbox, self.angle)
+        # 四角控制点
         hs = HANDLE_SIZE
-        # 缓存角点画布坐标（用于旋转区域检测，不画手柄）
-        self._corner_canvas_pos = [self._to_canvas(ix, iy) for ix, iy in corners]
-        for ix, iy in corners:
-            cx_, cy_ = self._to_canvas(ix, iy)
-            self.create_rectangle(cx_ - hs, cy_ - hs, cx_ + hs, cy_ + hs,
+        self._corner_canvas_pos = [(cx1, cy1), (cx2, cy1), (cx2, cy2), (cx1, cy2)]
+        for ccx, ccy in self._corner_canvas_pos:
+            self.create_rectangle(ccx - hs, ccy - hs, ccx + hs, ccy + hs,
                                   fill=HANDLE_COLOR, outline="white", width=1, tags="overlay")
-        edges = [
-            ((corners[0][0]+corners[1][0])/2, (corners[0][1]+corners[1][1])/2),
-            ((corners[1][0]+corners[2][0])/2, (corners[1][1]+corners[2][1])/2),
-            ((corners[2][0]+corners[3][0])/2, (corners[2][1]+corners[3][1])/2),
-            ((corners[3][0]+corners[0][0])/2, (corners[3][1]+corners[0][1])/2),
-        ]
-        for ix, iy in edges:
-            cx_, cy_ = self._to_canvas(ix, iy)
-            self.create_rectangle(cx_ - hs, cy_ - hs, cx_ + hs, cy_ + hs,
+
+        # 四边中点
+        mx, my = (cx1 + cx2) / 2, (cy1 + cy2) / 2
+        edge_positions = [(mx, cy1), (cx2, my), (mx, cy2), (cx1, my)]
+        for ccx, ccy in edge_positions:
+            self.create_rectangle(ccx - hs, ccy - hs, ccx + hs, ccy + hs,
                                   fill="#FFFFFF", outline=BOX_COLOR, width=1, tags="overlay")
 
-    def _draw_poly(self, b, angle_deg, color, width, dash=()):
-        corners = self._rotated_corners(b, angle_deg)
-        pts = []
-        for x, y in corners:
-            cx_, cy_ = self._to_canvas(x, y)
-            pts.extend([cx_, cy_])
-        self.create_polygon(*pts, outline=color, width=width, fill="", dash=dash, tags="overlay")
+    def _draw_rect(self, b, color, width, dash=()):
+        """画轴对齐矩形。"""
+        x1, y1, x2, y2 = b
+        cx1, cy1 = self._to_canvas(x1, y1)
+        cx2, cy2 = self._to_canvas(x2, y2)
+        self.create_rectangle(cx1, cy1, cx2, cy2,
+                              outline=color, width=width, dash=dash, tags="overlay")
 
     # ── 命中检测 ──────────────────────────────────────────────
 
     def _hit_corner(self, cx, cy):
-        corners = self._rotated_corners(self.bbox, self.angle)
-        tags = ["nw", "ne", "se", "sw"]
-        best, best_d = None, HANDLE_SIZE + 5
-        for tag, (ix, iy) in zip(tags, corners):
-            cix, ciy = self._to_canvas(ix, iy)
-            d = ((cx - cix)**2 + (cy - ciy)**2)**0.5
+        for ccx, ccy in self._corner_canvas_pos:
+            if abs(cx - ccx) <= HANDLE_SIZE + 5 and abs(cy - ccy) <= HANDLE_SIZE + 5:
+                # Return tag for the corner — needed for resize direction
+                # But with axis-aligned bbox, tags are ["nw","ne","se","sw"] for corners
+                return True
+        return False
+
+    def _corner_name(self, cx, cy):
+        """返回最近的角点名（用于 resize 方向）。"""
+        names = ["nw", "ne", "se", "sw"]
+        best, best_d = None, HANDLE_SIZE + 8
+        for name, (ccx, ccy) in zip(names, self._corner_canvas_pos):
+            d = ((cx - ccx)**2 + (cy - ccy)**2)**0.5
             if d < best_d:
-                best, best_d = tag, d
+                best, best_d = name, d
         return best
 
     def _hit_rotation_zone(self, cx, cy):
-        """框外角点附近 = 旋转区域。距离角点 15~50px 的环形区域。"""
+        """框外靠近角点 = 旋转区域。"""
         if not hasattr(self, '_corner_canvas_pos'):
             return False
+        x1, y1, x2, y2 = self.bbox
+        cx1, cy1 = self._to_canvas(x1, y1)
+        cx2, cy2 = self._to_canvas(x2, y2)
         # 框内 → 不是旋转
-        if self._poly_contains(cx, cy):
+        if cx1 - 2 <= cx <= cx2 + 2 and cy1 - 2 <= cy <= cy2 + 2:
             return False
-        # 角点命中 → resize，不是旋转
-        if self._hit_corner(cx, cy):
-            return False
-        # 框外且靠近角点 → 旋转
+        # 在角点 handle 上 → resize，不是旋转
         for ccx, ccy in self._corner_canvas_pos:
-            d = ((cx - ccx) ** 2 + (cy - ccy) ** 2) ** 0.5
-            if d <= 50:
+            if abs(cx - ccx) <= HANDLE_SIZE + 5 and abs(cy - ccy) <= HANDLE_SIZE + 5:
+                return False
+        # 靠近任意角点外侧 → 旋转
+        for ccx, ccy in self._corner_canvas_pos:
+            if ((cx - ccx)**2 + (cy - ccy)**2)**0.5 <= 50:
                 return True
         return False
 
     def _hit_edge(self, cx, cy):
-        corners = self._rotated_corners(self.bbox, self.angle)
-        tags = ["n", "e", "s", "w"]
-        edge_defs = [
-            (corners[0], corners[1]), (corners[1], corners[2]),
-            (corners[2], corners[3]), (corners[3], corners[0]),
-        ]
-        best, best_d = None, HANDLE_SIZE + 5
-        for tag, ((x1,y1),(x2,y2)) in zip(tags, edge_defs):
-            cx1, cy1 = self._to_canvas(x1, y1)
-            cx2, cy2 = self._to_canvas(x2, y2)
-            dx, dy = cx2 - cx1, cy2 - cy1
-            length2 = dx*dx + dy*dy
-            if length2 == 0: continue
-            t = max(0, min(1, ((cx - cx1)*dx + (cy - cy1)*dy) / length2))
-            px, py = cx1 + t*dx, cy1 + t*dy
-            d = ((cx - px)**2 + (cy - py)**2)**0.5
-            if d < best_d:
-                best, best_d = tag, d
-        return best
+        """检测鼠标是否在边中点附近（轴对齐）。"""
+        x1, y1, x2, y2 = self.bbox
+        cx1, cy1 = self._to_canvas(x1, y1)
+        cx2, cy2 = self._to_canvas(x2, y2)
+        mx, my = (cx1 + cx2) / 2, (cy1 + cy2) / 2
+        edges = [("n", mx, cy1), ("s", mx, cy2), ("w", cx1, my), ("e", cx2, my)]
+        for name, ex, ey in edges:
+            if abs(cx - ex) <= HANDLE_SIZE + 5 and abs(cy - ey) <= HANDLE_SIZE + 5:
+                return name
+        return None
 
     def _poly_contains(self, cx, cy):
-        corners = self._rotated_corners(self.bbox, self.angle)
-        pts = [(self._to_canvas(ix, iy)) for ix, iy in corners]
-        n = len(pts)
-        inside = False
-        j = n - 1
-        for i in range(n):
-            xi, yi = pts[i]
-            xj, yj = pts[j]
-            if ((yi > cy) != (yj > cy)) and (cx < (xj - xi) * (cy - yi) / (yj - yi) + xi):
-                inside = not inside
-            j = i
-        return inside
+        """轴对齐矩形命中检测。"""
+        x1, y1, x2, y2 = self.bbox
+        cx1, cy1 = self._to_canvas(x1, y1)
+        cx2, cy2 = self._to_canvas(x2, y2)
+        return cx1 <= cx <= cx2 and cy1 <= cy <= cy2
 
     def _on_motion(self, event):
         """鼠标移动：检测旋转区域并切换光标。"""
         if self._drag:
             return
         if self._hit_rotation_zone(event.x, event.y):
-            self.configure(cursor="fleur")
+            self.configure(cursor="exchange")
         else:
             self.configure(cursor="")
 
@@ -302,11 +294,11 @@ class BBoxEditor(tk.Canvas):
             self._drag_sx, self._drag_sy = event.x, event.y
             self._drag_angle = self.angle
             self._defer_preview = True
-            self.winfo_toplevel().configure(cursor="fleur")
+            self.winfo_toplevel().configure(cursor="exchange")
             return
         h = self._hit_corner(event.x, event.y)
         if h:
-            self._drag = h
+            self._drag = self._corner_name(event.x, event.y)
             self._drag_sx, self._drag_sy = event.x, event.y
             self._drag_box = list(self.bbox)
             self._defer_preview = True
@@ -327,7 +319,7 @@ class BBoxEditor(tk.Canvas):
     def _on_move(self, event):
         if not self._drag: return
 
-        # 旋转：绕 bbox 中心旋转
+        # 旋转：绕 bbox 中心旋转 → 重绘全画面（图片旋转 + 绿框）
         if self._drag == "rotate":
             cx = (self.bbox[0] + self.bbox[2]) / 2
             cy = (self.bbox[1] + self.bbox[3]) / 2
@@ -335,13 +327,13 @@ class BBoxEditor(tk.Canvas):
             angle_start = math.atan2(self._drag_sy - ccy, self._drag_sx - ccx)
             angle_now = math.atan2(event.y - ccy, event.x - ccx)
             delta = math.degrees(angle_now - angle_start)
-            if event.state & 0x1:  # Shift
+            if event.state & 0x1:
                 delta = round(delta / 15) * 15
             raw = self._drag_angle + delta
             self.angle = max(-45, min(45, round(raw * 2) / 2))
             now = time.perf_counter()
             if now - self._last_redraw >= 0.016:
-                self._draw_overlay()
+                self._redraw()
                 self._last_redraw = now
             if self._on_change:
                 self._preview_deferred = True
@@ -350,26 +342,21 @@ class BBoxEditor(tk.Canvas):
         if self._drag_box is None: return
         dx = (event.x - self._drag_sx) / self.scale
         dy = (event.y - self._drag_sy) / self.scale
-        # 反旋转到轴对齐
-        rad = math.radians(-self.angle)
-        cos_a, sin_a = math.cos(rad), math.sin(rad)
-        rdx = dx * cos_a - dy * sin_a
-        rdy = dx * sin_a + dy * cos_a
 
         iw, ih = self.pil_img.width, self.pil_img.height
         x1, y1, x2, y2 = self._drag_box
         moves = {
-            "move": lambda: (int(max(0, x1+rdx)), int(max(0, y1+rdy)),
-                             int(min(iw, x1+rdx+(x2-x1))), int(min(ih, y1+rdy+(y2-y1))))
-                     if x1+rdx+(x2-x1) <= iw and y1+rdy+(y2-y1) <= ih else None,
-            "nw": lambda: (int(min(max(0, x1+rdx), x2-10)), int(min(max(0, y1+rdy), y2-10)), x2, y2),
-            "ne": lambda: (x1, int(min(max(0, y1+rdy), y2-10)), int(max(x1+10, min(iw, x2+rdx))), y2),
-            "sw": lambda: (int(min(max(0, x1+rdx), x2-10)), y1, x2, int(max(y1+10, min(ih, y2+rdy)))),
-            "se": lambda: (x1, y1, int(max(x1+10, min(iw, x2+rdx))), int(max(y1+10, min(ih, y2+rdy)))),
-            "n":  lambda: (x1, int(min(max(0, y1+rdy), y2-10)), x2, y2),
-            "s":  lambda: (x1, y1, x2, int(max(y1+10, min(ih, y2+rdy)))),
-            "w":  lambda: (int(min(max(0, x1+rdx), x2-10)), y1, x2, y2),
-            "e":  lambda: (x1, y1, int(max(x1+10, min(iw, x2+rdx))), y2),
+            "move": lambda: (int(max(0, x1+dx)), int(max(0, y1+dy)),
+                             int(min(iw, x1+dx+(x2-x1))), int(min(ih, y1+dy+(y2-y1))))
+                     if x1+dx+(x2-x1) <= iw and y1+dy+(y2-y1) <= ih else None,
+            "nw": lambda: (int(min(max(0, x1+dx), x2-10)), int(min(max(0, y1+dy), y2-10)), x2, y2),
+            "ne": lambda: (x1, int(min(max(0, y1+dy), y2-10)), int(max(x1+10, min(iw, x2+dx))), y2),
+            "sw": lambda: (int(min(max(0, x1+dx), x2-10)), y1, x2, int(max(y1+10, min(ih, y2+dy)))),
+            "se": lambda: (x1, y1, int(max(x1+10, min(iw, x2+dx))), int(max(y1+10, min(ih, y2+dy)))),
+            "n":  lambda: (x1, int(min(max(0, y1+dy), y2-10)), x2, y2),
+            "s":  lambda: (x1, y1, x2, int(max(y1+10, min(ih, y2+dy)))),
+            "w":  lambda: (int(min(max(0, x1+dx), x2-10)), y1, x2, y2),
+            "e":  lambda: (x1, y1, int(max(x1+10, min(iw, x2+dx))), y2),
         }
         fn = moves.get(self._drag)
         if fn:
