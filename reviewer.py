@@ -35,11 +35,8 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif"}
 # ═══════════════════════════════════════════════════════════════
 
 class BBoxEditor(tk.Canvas):
-    """bbox 编辑器：缩放/平移/角点+边中点拖拽 + 旋转手柄"""
+    """bbox 编辑器：缩放/平移/角点+边中点拖拽 + 旋转"""
     _placeholder = None  # 类属性：空编辑器居中显示的品牌 logo
-
-    ROTATE_HANDLE_R = 6       # 旋转手柄半径 (canvas px)
-    ROTATE_HANDLE_DIST = 18   # 旋转手柄离角点的距离 (canvas px)
 
     @classmethod
     def set_placeholder(cls, img):
@@ -61,7 +58,6 @@ class BBoxEditor(tk.Canvas):
         self._drag_box = None
         self._drag_angle = 0.0
         self._pan_data = None
-        self._hover = None        # 'rotate' | None — 鼠标悬停旋转手柄
         self._on_change = on_change
         self._last_fit_w = 0
         # 性能优化：帧率节流 + 延迟预览
@@ -184,25 +180,8 @@ class BBoxEditor(tk.Canvas):
         # 控制点
         corners = self._rotated_corners(self.bbox, self.angle)
         hs = HANDLE_SIZE
-        # 旋转手柄 — 蓝色小圆，在角点外侧延长线上
-        self._rotate_handle_pos = []
-        for i, (ix, iy) in enumerate(corners):
-            cx_, cy_ = self._to_canvas(ix, iy)
-            # 方向：bbox 中心 → 角点
-            bcx = (self.bbox[0] + self.bbox[2]) / 2
-            bcy = (self.bbox[1] + self.bbox[3]) / 2
-            bccx, bccy = self._to_canvas(bcx, bcy)
-            direction = math.atan2(cy_ - bccy, cx_ - bccx)
-            rhx = cx_ + math.cos(direction) * self.ROTATE_HANDLE_DIST
-            rhy = cy_ + math.sin(direction) * self.ROTATE_HANDLE_DIST
-            self._rotate_handle_pos.append((rhx, rhy))
-            # 连接线 + 圆
-            self.create_line(cx_, cy_, rhx, rhy,
-                             fill="#4488FF", width=1, tags="overlay")
-            rh_color = "#4488FF" if self._hover != 'rotate' else "#88BBFF"
-            self.create_oval(rhx - self.ROTATE_HANDLE_R, rhy - self.ROTATE_HANDLE_R,
-                             rhx + self.ROTATE_HANDLE_R, rhy + self.ROTATE_HANDLE_R,
-                             fill=rh_color, outline="white", width=1, tags="overlay")
+        # 缓存角点画布坐标（用于旋转区域检测，不画手柄）
+        self._corner_canvas_pos = [self._to_canvas(ix, iy) for ix, iy in corners]
         for ix, iy in corners:
             cx_, cy_ = self._to_canvas(ix, iy)
             self.create_rectangle(cx_ - hs, cy_ - hs, cx_ + hs, cy_ + hs,
@@ -240,11 +219,18 @@ class BBoxEditor(tk.Canvas):
         return best
 
     def _hit_rotation_handle(self, cx, cy):
-        if not hasattr(self, '_rotate_handle_pos'):
+        """检测鼠标是否在框外靠近角点（PS 风格旋转区域）。
+        框内 = 平移，角点上 = resize，框外近角点 = 旋转。
+        """
+        if not hasattr(self, '_corner_canvas_pos'):
             return False
-        for rhx, rhy in self._rotate_handle_pos:
-            d = ((cx - rhx) ** 2 + (cy - rhy) ** 2) ** 0.5
-            if d < self.ROTATE_HANDLE_R + 5:
+        # 如果鼠标在框内或已命中 resize 区域 → 不是旋转
+        if self._poly_contains(cx, cy) or self._hit_corner(cx, cy) or self._hit_edge(cx, cy):
+            return False
+        # 靠近任意角点外侧 → 旋转
+        for ccx, ccy in self._corner_canvas_pos:
+            d = ((cx - ccx) ** 2 + (cy - ccy) ** 2) ** 0.5
+            if d <= 40:  # generous hit zone outside corners
                 return True
         return False
 
@@ -284,18 +270,18 @@ class BBoxEditor(tk.Canvas):
         return inside
 
     def _on_motion(self, event):
-        """鼠标移动时检测是否悬停在旋转手柄上。"""
+        """鼠标移动：检测旋转区域并切换光标。"""
         if self._drag:
-            return  # 拖拽中不检测
-        was = self._hover
-        self._hover = 'rotate' if self._hit_rotation_handle(event.x, event.y) else None
-        if was != self._hover:
-            self._draw_overlay()
+            return
+        if self._hit_rotation_handle(event.x, event.y):
+            self.configure(cursor="exchange")  # ↔ 旋转提示
+        elif self._hit_corner(event.x, event.y):
+            self.configure(cursor="")          # 默认（resize）
+        else:
+            self.configure(cursor="")
 
     def _clear_hover(self):
-        if self._hover is not None:
-            self._hover = None
-            self._draw_overlay()
+        self.configure(cursor="")
 
     # ── 鼠标事件 ──────────────────────────────────────────────
 
@@ -310,13 +296,12 @@ class BBoxEditor(tk.Canvas):
         self._drag_box = None
         self._preview_deferred = False
 
-        # 旋转手柄优先
+        # 旋转区域优先（角点外侧 6-30px）
         if self._hit_rotation_handle(event.x, event.y):
             self._drag = "rotate"
             self._drag_sx, self._drag_sy = event.x, event.y
             self._drag_angle = self.angle
             self._defer_preview = True
-            self.delete("overlay")  # 开始旋转时隐藏叠加层避免残影
             return
         h = self._hit_corner(event.x, event.y)
         if h:
@@ -353,10 +338,7 @@ class BBoxEditor(tk.Canvas):
             if event.state & 0x1:
                 delta = round(delta / 15) * 15
             self.angle = self._drag_angle + delta
-            now = time.perf_counter()
-            if now - self._last_redraw >= 0.016:
-                self._draw_overlay()
-                self._last_redraw = now
+            self._draw_overlay()   # 旋转不节流，确保即时跟手
             if self._on_change:
                 self._preview_deferred = True
             return
