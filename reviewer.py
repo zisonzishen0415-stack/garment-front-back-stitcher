@@ -143,15 +143,16 @@ class BBoxEditor(tk.Canvas):
 
         iw, ih = self.pil_img.size
         dw, dh = max(1, int(iw * self.scale)), max(1, int(ih * self.scale))
-        cache_key = (self.scale, self.angle)
+        cache_key = (self.scale, self.angle, dw, dh)
         if (self._display_cache is None
                 or getattr(self, '_cache_key', None) != cache_key):
             if abs(self.angle) > 0.005:
-                base = self.pil_img.rotate(self.angle, Image.BICUBIC,
-                                           expand=False, fillcolor=(30, 30, 30))
+                # 先缩小再旋转（小图旋转远快于大图旋转）
+                base = self.pil_img.resize((dw, dh), Image.BILINEAR)
+                self._display_cache = base.rotate(self.angle, Image.BICUBIC,
+                                                  expand=False, fillcolor=(30, 30, 30))
             else:
-                base = self.pil_img
-            self._display_cache = base.resize((dw, dh), Image.BILINEAR)
+                self._display_cache = self.pil_img.resize((dw, dh), Image.BILINEAR)
             self._cache_key = cache_key
         self._photo = ImageTk.PhotoImage(self._display_cache)
         self.create_image(self.ox, self.oy, anchor=tk.NW, image=self._photo, tags="bg")
