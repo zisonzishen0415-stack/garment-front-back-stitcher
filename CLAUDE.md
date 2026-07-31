@@ -48,10 +48,12 @@ There is no test suite, linter config, or build step. The project runs directly 
 
 | Script | Role |
 |---|---|
-| `reviewer.py` | **Primary GUI** — streaming AI processing, bbox drag-editing, angle adjustment, liquify integration, per-pair export |
+| `reviewer.py` | **Primary GUI** — streaming AI processing, bbox drag-editing, angle adjustment (buttons + drag-to-rotate), liquify integration, per-pair export |
 | `gui.py` + `main.py` | **Old GUI** — batch folder-in/folder-out with progress bar (uses `processor.py`) |
 | `annotator.py` | **Manual annotation tool** — draw bboxes on individual images, saves to `annotations.json`. **Self-contained** — has its own rembg import, does not depend on any processor module. |
 | `liquify.py` | **Standalone** — can be run directly as `python liquify.py` for single-image PS-style warp editing |
+| `mask_annotator.py` | **Mask brush tool** — paint to erase/restore rembg mask regions (mannequin neck/torso). Saves `<stem>_mask.png`. Auto-detected by reviewer. |
+| `train_u2net.py` | **Fine-tuning pipeline** — trains U-2-Net on human-annotated masks, exports ONNX. Multi-directory data support, checkpoint resume. |
 | `batch_manual.py` | **Offline batch export** using existing `annotations.json`. Uses `processor.py` (old v22+ pipeline), not `processor_v11.py`. |
 
 ### Core processing pipeline
@@ -69,8 +71,11 @@ Single pipeline: `contrast-enhanced rembg → bbox → joint contour consensus �
    - Interpolates both onto a common y-axis, computes width ratio row-by-row
    - Rows where ratio < `CONSENSUS_RATIO_THRESHOLD` (1.35) are "consensus" (symmetric width = real garment)
    - Takes the largest contiguous consensus interval → re-derives bboxes within that interval
-   - Applies `_trim_rod_bottom()` to detect narrow regions (mask width < 12% of bbox width) and crop them off
+   - **Consensus refines only horizontal (x1, x2) and bottom (y2) — top (y1) is preserved** (fine-tuned model handles mannequin neck)
+   - Applies `_trim_rod_bottom()` to detect narrow regions (mask width < 12% of bbox width) and crop them off only from the bottom
 3. The reviewer then allows manual bbox/angle override before cropping
+
+**Golden ratio crop anchoring**: `_simple_crop()` positions the bbox offset within the crop window using φ ≈ 1.618 — outer margin (near frame edge) : total inner gap (front+back combined) = φ : 1. This pulls front and back toward the center for narrow garments while barely affecting wide garments. See reviewer.py:972-996.
 
 **Important**: The reviewer's streaming worker calls `processor._joint_detect()` directly (not `process_pair()`) because it only needs bboxes. The full `process_pair()` which does crop+stitch is used by the old GUI and `process_all()`.
 
@@ -118,6 +123,18 @@ The "液化" button in the reviewer generates a full-resolution stitched preview
 
 **Develop mode (`python reviewer.py`):** No `_internal/models/` directory, so `U2NET_HOME` is not set; rembg uses its default `~/.u2net/` path. The model must be downloaded on first run (rembg auto-downloads via pooch).
 
+**Model priority** (see `processor_v11._single_pipe()`):
+1. **Manual mask (`<stem>_mask.png`)** — if exists in source dir, loaded directly, no inference
+2. **Fine-tuned ONNX (`models/u2net_finetuned.onnx`)** — if exists, runs onnxruntime directly (skips rembg)
+3. **Original rembg u2net** — fallback, uses rembg's `new_session()` + `remove()`
+
+The fine-tuned model is auto-detected; no config changes needed. Same priority applies to `mask_annotator.py`.
+
+**Deferred AI** (see `reviewer.py`):
+- If user clicks "AI 处理" before model finishes loading, sets `_pending_ai = True`
+- `_check_prewarm()` detects model ready → auto-calls `_start_process()`
+- Status bar shows "模型就绪后将自动开始 AI 处理..." while pending
+
 **Threading** (see `processor_v11.py`):
 - `_get_session()` uses **double-checked locking** (`threading.Lock`) — prevents race conditions where prewarm and worker threads both create separate sessions.
 - `prewarm()` only loads model weights (`new_session()`), no inference.
@@ -141,6 +158,18 @@ The "液化" button in the reviewer generates a full-resolution stitched preview
 | F | Fit editors to window |
 | F1 | About dialog |
 | , / . | Rotate 0.5° CCW/CW (bound to `<comma>`/`<period>`) |
+
+**Mouse interactions (BBoxEditor)**:
+
+| Action | Effect |
+|--------|--------|
+| Drag corner | Resize bbox |
+| Drag edge midpoint | Resize one side |
+| Drag inside bbox | Move bbox |
+| **Drag outside bbox near corner** | **Rotate bbox around center** ↻ |
+| Shift + rotate drag | Snap to 15° increments |
+| Scroll | Zoom |
+| Middle-drag / Right-drag | Pan |
 
 ### Annotator keyboard shortcuts
 
