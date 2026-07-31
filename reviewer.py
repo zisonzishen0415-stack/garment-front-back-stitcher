@@ -467,6 +467,7 @@ class ReviewerApp(ctk.CTk):
         self._proc_total = 0
         self._results: list = []
         self._first_loaded = False
+        self._pending_ai = False    # 模型未就绪时点了 AI 处理，就绪后自动开始
 
         self.btn_debug = None
 
@@ -508,6 +509,10 @@ class ReviewerApp(ctk.CTk):
             if getattr(self.processor, '_warmed', False):
                 elapsed = time.time() - self._t0
                 self._status_loader.configure(text=f"模型就绪 ({elapsed:.1f}s)")
+                # 模型就绪前点了 AI 处理 → 自动开始
+                if self._pending_ai:
+                    self._pending_ai = False
+                    self._start_process()
                 return
             # 显示加载进度
             elapsed = time.time() - self._t0
@@ -750,9 +755,10 @@ class ReviewerApp(ctk.CTk):
             self.status.configure(text="已选文件夹，点击「AI 处理」开始")
 
     def _start_process(self, auto_load=False):
-        # 模型还在加载中，不允许开始处理
+        # 模型还在加载中 → 排队等待
         if not getattr(self.processor, '_warmed', False):
-            self.status.configure(text="模型仍在加载中，请稍候...")
+            self._pending_ai = True
+            self.status.configure(text="模型就绪后将自动开始 AI 处理...")
             return
 
         # Prevent re-entry while worker is running
