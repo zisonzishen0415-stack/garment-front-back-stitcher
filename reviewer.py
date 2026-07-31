@@ -1375,7 +1375,8 @@ class AboutWindow(tk.Toplevel):
                         text="Garment Front-Back Stitcher\n"
                              "服装样品正反面 AI+CV 拼接工具\n\n"
                              "技术栈： rembg / onnxruntime / NumPy / SciPy / Pillow\n"
-                             "桌面框架： customtkinter + tkinter",
+                             "桌面框架： customtkinter + tkinter\n\n"
+                             "Powered by zisonzishen",
                         bg="#1E1E1E", fg="#CCC",
                         font=("Microsoft YaHei UI", 11),
                         justify="center")
