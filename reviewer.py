@@ -427,6 +427,173 @@ class BBoxEditor(tk.Canvas):
 
 
 # ═══════════════════════════════════════════════════════════════
+# 文件夹选择器（带缩略图预览）
+# ═══════════════════════════════════════════════════════════════
+
+class FolderPicker(ctk.CTkToplevel):
+    """自定义文件夹选择对话框：左侧文件夹列表，右侧缩略图预览"""
+
+    THUMB_SIZE = 100
+
+    def __init__(self, parent, callback=None):
+        super().__init__(parent)
+        self.title("选择素材文件夹")
+        self.geometry("1000x650")
+        self.minsize(700, 400)
+        self._callback = callback
+        self._selected = None
+        self._photo_refs = []
+        self.grab_set()
+
+        self._build_ui()
+        self._scan_folders()
+        self.after(100, lambda: self.grab_set())
+
+    def _build_ui(self):
+        top = ctk.CTkFrame(self)
+        top.pack(fill="x", padx=10, pady=(10, 4))
+        ctk.CTkLabel(top, text="选择包含图片的文件夹：",
+                     font=ctk.CTkFont(weight="bold")).pack(side="left", padx=(4, 10))
+        self._path_label = ctk.CTkLabel(top, text="", text_color="#888")
+        self._path_label.pack(side="left")
+        ctk.CTkButton(top, text="浏览其他...", width=80,
+                      command=self._browse_other).pack(side="right", padx=4)
+
+        body = ctk.CTkFrame(self)
+        body.pack(fill="both", expand=True, padx=10, pady=4)
+        body.grid_columnconfigure(0, weight=0)
+        body.grid_columnconfigure(1, weight=1)
+        body.grid_rowconfigure(0, weight=1)
+
+        left = ctk.CTkFrame(body)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        ctk.CTkLabel(left, text="文件夹", font=ctk.CTkFont(weight="bold")).pack(pady=(4, 2))
+        self._folder_list = tk.Listbox(left, bg="#2B2B2B", fg="#DDDDDD",
+                                        selectbackground="#1F6AA5", font=("TkDefaultFont", 10),
+                                        borderwidth=0, highlightthickness=0, activestyle="none")
+        self._folder_list.pack(fill="both", expand=True, padx=4, pady=(0, 4))
+        self._folder_list.bind("<<ListboxSelect>>", self._on_folder_select)
+        self._folder_list.bind("<Double-Button-1>", lambda e: self._confirm())
+        sb = tk.Scrollbar(left, command=self._folder_list.yview)
+        sb.pack(side="right", fill="y")
+        self._folder_list.configure(yscrollcommand=sb.set)
+        self._folder_info = ctk.CTkLabel(left, text="", text_color="#666")
+        self._folder_info.pack(pady=(0, 4))
+
+        right = ctk.CTkFrame(body)
+        right.grid(row=0, column=1, sticky="nsew")
+        ctk.CTkLabel(right, text="预览", font=ctk.CTkFont(weight="bold")).pack(pady=(4, 2))
+        self._thumb_frame = ctk.CTkScrollableFrame(right)
+        self._thumb_frame.pack(fill="both", expand=True, padx=4, pady=(0, 4))
+
+        bot = ctk.CTkFrame(self)
+        bot.pack(fill="x", padx=10, pady=(4, 10))
+        ctk.CTkButton(bot, text="选择此文件夹", fg_color="#2B8C3C",
+                      hover_color="#236E30", command=self._confirm).pack(side="right", padx=4)
+        ctk.CTkButton(bot, text="取消", fg_color="transparent",
+                      border_width=1, command=self._cancel).pack(side="right", padx=4)
+
+    def _scan_folders(self):
+        candidates = []
+        for base in [Path("素材")]:
+            if not base.is_dir():
+                continue
+            for d in sorted(base.iterdir()):
+                if d.is_dir() and not d.name.startswith("."):
+                    n = len([f for f in d.iterdir()
+                             if f.is_file() and f.suffix.lower() in IMAGE_EXTS])
+                    if n > 0:
+                        candidates.append((str(d), d.name, n))
+            n = len([f for f in base.iterdir()
+                     if f.is_file() and f.suffix.lower() in IMAGE_EXTS])
+            if n > 0:
+                candidates.insert(0, (str(base), base.name, n))
+
+        for path, name, count in candidates:
+            self._folder_list.insert("end", f"  {name}  ({count} 张)")
+
+        self._folder_paths = [c[0] for c in candidates]
+
+    def _on_folder_select(self, event):
+        sel = self._folder_list.curselection()
+        if not sel:
+            return
+        self._selected = self._folder_paths[sel[0]]
+        self._path_label.configure(text=self._selected)
+        self._update_thumbs(self._selected)
+
+    def _update_thumbs(self, folder):
+        for w in self._thumb_frame.winfo_children():
+            w.destroy()
+        self._photo_refs.clear()
+
+        d = Path(folder)
+        files = sorted([f for f in d.iterdir()
+                        if f.is_file() and f.suffix.lower() in IMAGE_EXTS],
+                       key=lambda f: f.name)
+
+        has_ann = (d / "annotations.json").exists()
+        mask_count = len(list(d.glob("*_mask.png")))
+        self._folder_info.configure(
+            text=f"{len(files)} 张  |  mask: {mask_count}"
+                 f"{'  |  ✓ annot' if has_ann else ''}")
+
+        display = files[:40]
+        if not display:
+            ctk.CTkLabel(self._thumb_frame, text="无图片", text_color="#888").pack(pady=20)
+            return
+
+        cols = max(1, (self._thumb_frame.winfo_width() - 10) // (self.THUMB_SIZE + 10))
+        row_frame = None
+        for i, f in enumerate(display):
+            col = i % cols
+            if col == 0:
+                row_frame = ctk.CTkFrame(self._thumb_frame, fg_color="transparent")
+                row_frame.pack(fill="x", pady=(0, 4))
+            self._load_thumb(row_frame, f)
+
+    def _load_thumb(self, parent, filepath):
+        try:
+            img = ImageOps.exif_transpose(Image.open(filepath)).convert("RGB")
+            w, h = img.size
+            ratio = self.THUMB_SIZE / max(w, h)
+            tw, th = int(w * ratio), int(h * ratio)
+            img = img.resize((tw, th), Image.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            self._photo_refs.append(photo)
+            frame = ctk.CTkFrame(parent, fg_color="transparent")
+            frame.pack(side="left", padx=3)
+            lbl = tk.Label(frame, image=photo, bg="#2B2B2B", borderwidth=0)
+            lbl.image = photo
+            lbl.pack()
+            name = filepath.stem[:12] + (".." if len(filepath.stem) > 12 else "")
+            ctk.CTkLabel(frame, text=name, font=("TkDefaultFont", 8),
+                         text_color="#999").pack()
+        except Exception:
+            pass
+
+    def _browse_other(self):
+        from tkinter import filedialog
+        path = filedialog.askdirectory(title="选择图片文件夹", parent=self)
+        if path:
+            self._selected = path
+            self._path_label.configure(text=path)
+            self._update_thumbs(path)
+
+    def _confirm(self):
+        self.grab_release()
+        self.destroy()
+        if self._callback and self._selected:
+            self._callback(self._selected)
+
+    def _cancel(self):
+        self.grab_release()
+        self.destroy()
+        if self._callback:
+            self._callback(None)
+
+
+# ═══════════════════════════════════════════════════════════════
 # 主应用
 # ═══════════════════════════════════════════════════════════════
 
@@ -733,18 +900,20 @@ class ReviewerApp(ctk.CTk):
     # ── 流式处理 ──────────────────────────────────────────────
 
     def _pick_dir(self):
-        from tkinter import filedialog
-        path = filedialog.askdirectory(title="选择原图文件夹")
-        if path:
-            self.entry_dir.delete(0, "end")
-            self.entry_dir.insert(0, path)
-            d = Path(path)
-            ann = d / "annotations.json"
-            self.update_idletasks()
-            if ann.exists():
-                self.after_idle(lambda: self._start_process(auto_load=True))
-            else:
-                self.status.configure(text="已选文件夹，点击「AI 处理」开始")
+        FolderPicker(self, callback=self._on_folder_picked)
+
+    def _on_folder_picked(self, path):
+        if not path:
+            return
+        self.entry_dir.delete(0, "end")
+        self.entry_dir.insert(0, path)
+        d = Path(path)
+        ann = d / "annotations.json"
+        self.update_idletasks()
+        if ann.exists():
+            self.after_idle(lambda: self._start_process(auto_load=True))
+        else:
+            self.status.configure(text="已选文件夹，点击「AI 处理」开始")
 
     def _start_process(self, auto_load=False):
         # 模型还在加载中，不允许开始处理
