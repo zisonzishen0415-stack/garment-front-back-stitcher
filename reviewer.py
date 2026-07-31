@@ -495,10 +495,6 @@ class ReviewerApp(ctk.CTk):
             self._preview_placeholder = None
 
         self._build_ui()
-        # 启动时显示文件夹浏览器
-        self._main_editors.pack_forget()
-        self._folder_browser.pack(fill="both", expand=True, padx=8, pady=(4, 8))
-        self._scan_folders()
         self.update_idletasks()
         if self._preview_placeholder:
             self._draw_preview_placeholder()
@@ -578,13 +574,13 @@ class ReviewerApp(ctk.CTk):
         self.lbl_fname.pack(side="right", padx=8)
 
         # 主体 — grid 布局比 pack 更可控：左列固定预览，右列弹性编辑器
-        self._main_editors = ctk.CTkFrame(self)
-        self._main_editors.pack(fill="both", expand=True, padx=8, pady=(4, 8))
-        self._main_editors.grid_columnconfigure(0, weight=0)   # 预览列：固定宽度
-        self._main_editors.grid_columnconfigure(1, weight=1)   # 编辑列：弹性扩展
-        self._main_editors.grid_rowconfigure(0, weight=1)
+        main = ctk.CTkFrame(self)
+        main.pack(fill="both", expand=True, padx=8, pady=(4, 8))
+        main.grid_columnconfigure(0, weight=0)   # 预览列：固定宽度
+        main.grid_columnconfigure(1, weight=1)   # 编辑列：弹性扩展
+        main.grid_rowconfigure(0, weight=1)
 
-        left = ctk.CTkFrame(self._main_editors, width=500, height=500)
+        left = ctk.CTkFrame(main, width=500, height=500)
         left.grid(row=0, column=0, sticky="ns", padx=(4, 2), pady=4)
         left.pack_propagate(False)
         ctk.CTkLabel(left, text="拼接预览", font=ctk.CTkFont(weight="bold")).pack(pady=(6, 2))
@@ -594,11 +590,11 @@ class ReviewerApp(ctk.CTk):
         self.preview_canvas.bind("<Enter>", lambda e: self.preview_canvas.focus_set())
         self.preview_canvas.bind("<Configure>", self._on_preview_configure)
         # 预览 1:1 正方形 = 容器高度（原始设计），窄屏时压缩以保编辑器 ≥420px
-        self._main_editors.bind("<Configure>", lambda e: left.configure(
+        main.bind("<Configure>", lambda e: left.configure(
             width=max(200, min(e.height - 8, e.width - 420))))
 
         # 右：编辑 — grid 等分正面/反面（窄窗时两侧等比压缩）
-        right = ctk.CTkFrame(self._main_editors)
+        right = ctk.CTkFrame(main)
         right.grid(row=0, column=1, sticky="nsew", padx=(2, 4), pady=4)
         right.grid_columnconfigure(0, weight=1)  # 正面列
         right.grid_columnconfigure(1, weight=1)  # 反面列
@@ -639,9 +635,6 @@ class ReviewerApp(ctk.CTk):
 
         self.editor_b = BBoxEditor(frame_b, on_change=self._on_bbox_changed)
         self.editor_b.pack(fill="both", expand=True, padx=4, pady=(2, 4))
-
-        # 文件夹浏览器（内嵌，初始隐藏）
-        self._build_folder_browser()
 
         # 状态栏（左侧状态文字 + 右侧加载提示）
         status_frame = ctk.CTkFrame(self, fg_color="transparent")
@@ -740,154 +733,18 @@ class ReviewerApp(ctk.CTk):
     # ── 流式处理 ──────────────────────────────────────────────
 
     def _pick_dir(self):
-        """切换显示文件夹浏览器面板。"""
-        if self._folder_browser.winfo_ismapped():
-            self._folder_browser.pack_forget()
-            self._main_editors.pack(fill="both", expand=True)
-        else:
-            self._main_editors.pack_forget()
-            self._folder_browser.pack(fill="both", expand=True, padx=8, pady=(4, 8))
-            self._scan_folders()
-
-    def _folder_selected(self, path):
-        self._folder_browser.pack_forget()
-        self._main_editors.pack(fill="both", expand=True)
-        self.entry_dir.delete(0, "end")
-        self.entry_dir.insert(0, path)
-        d = Path(path)
-        ann = d / "annotations.json"
-        self.update_idletasks()
-        if ann.exists():
-            self.after_idle(lambda: self._start_process(auto_load=True))
-        else:
-            self.status.configure(text="已选文件夹，点击「AI 处理」开始")
-
-    # ── 内嵌文件夹浏览器 ──────────────────────────────────────
-
-    THUMB_SIZE = 90
-
-    def _build_folder_browser(self):
-        """创建内嵌文件夹浏览器（初始隐藏）。"""
-        self._folder_browser = ctk.CTkFrame(self)
-        self._folder_browser.grid_columnconfigure(0, weight=0)
-        self._folder_browser.grid_columnconfigure(1, weight=1)
-        self._folder_browser.grid_rowconfigure(0, weight=1)
-
-        # 左：文件夹列表
-        left = ctk.CTkFrame(self._folder_browser)
-        left.grid(row=0, column=0, sticky="nsew", padx=(4, 4), pady=4)
-        left.grid_propagate(False)
-        left.configure(width=220)
-
-        top_row = ctk.CTkFrame(left)
-        top_row.pack(fill="x", padx=4, pady=(4, 2))
-        ctk.CTkLabel(top_row, text="素材目录", font=ctk.CTkFont(weight="bold")).pack(side="left")
-        ctk.CTkButton(top_row, text="浏览...", width=50, height=22,
-                      command=self._browse_other_folder).pack(side="right")
-
-        self._fp_list = tk.Listbox(left, bg="#2B2B2B", fg="#DDDDDD",
-                                    selectbackground="#1F6AA5", font=("TkDefaultFont", 10),
-                                    borderwidth=0, highlightthickness=0, activestyle="none")
-        self._fp_list.pack(fill="both", expand=True, padx=4, pady=(2, 4))
-        self._fp_list.bind("<<ListboxSelect>>", self._on_fp_select)
-        self._fp_list.bind("<Double-Button-1>", lambda e: self._on_fp_double_click())
-        sb = tk.Scrollbar(left, command=self._fp_list.yview)
-        sb.pack(side="right", fill="y")
-        self._fp_list.configure(yscrollcommand=sb.set)
-        self._fp_info = ctk.CTkLabel(left, text="", text_color="#666")
-        self._fp_info.pack(pady=(0, 4))
-
-        # 右：缩略图
-        right = ctk.CTkFrame(self._folder_browser)
-        right.grid(row=0, column=1, sticky="nsew", padx=(4, 4), pady=4)
-        ctk.CTkLabel(right, text="此区域无图片？该文件夹可能无受支持的文件",
-                     text_color="#555", font=ctk.CTkFont(size=10)).pack(pady=8)
-        self._fp_thumbs = ctk.CTkScrollableFrame(right)
-        self._fp_thumbs.pack(fill="both", expand=True, padx=4, pady=(0, 4))
-
-    def _scan_folders(self):
-        """扫描所有候选文件夹并填充列表。"""
-        self._fp_list.delete(0, "end")
-        self._fp_paths = []
-        for base in [Path("素材")]:
-            if not base.is_dir():
-                continue
-            for d in sorted(base.iterdir()):
-                if d.is_dir() and not d.name.startswith("."):
-                    n = len([f for f in d.iterdir()
-                             if f.is_file() and f.suffix.lower() in IMAGE_EXTS])
-                    if n > 0:
-                        info = f"  {d.name}  ({n} 张)"
-                        mask_n = len(list(d.glob("*_mask.png")))
-                        if mask_n > 0:
-                            info += f"  mask:{mask_n}"
-                        if (d / "annotations.json").exists():
-                            info += "  ✓"
-                        self._fp_list.insert("end", info)
-                        self._fp_paths.append(str(d))
-
-    def _on_fp_select(self, event):
-        sel = self._fp_list.curselection()
-        if not sel:
-            return
-        path = self._fp_paths[sel[0]]
-        self._show_folder_thumbs(path)
-
-    def _on_fp_double_click(self):
-        sel = self._fp_list.curselection()
-        if sel:
-            self._folder_selected(self._fp_paths[sel[0]])
-
-    def _show_folder_thumbs(self, folder):
-        for w in self._fp_thumbs.winfo_children():
-            w.destroy()
-        self._fp_photos = []
-
-        d = Path(folder)
-        files = sorted([f for f in d.iterdir()
-                        if f.is_file() and f.suffix.lower() in IMAGE_EXTS],
-                       key=lambda f: f.name)
-        self._fp_info.configure(
-            text=f"{len(files)} 张  |  mask: {len(list(d.glob('*_mask.png')))}"
-                 f"{'  |  ✓ annot' if (d/'annotations.json').exists() else ''}")
-
-        display = files[:40]
-        if not display:
-            return
-
-        cols = max(1, (self._fp_thumbs.winfo_width() - 10) // (self.THUMB_SIZE + 10))
-        row_frame = None
-        for i, fp in enumerate(display):
-            col = i % cols
-            if col == 0:
-                row_frame = ctk.CTkFrame(self._fp_thumbs, fg_color="transparent")
-                row_frame.pack(fill="x", pady=(0, 4))
-            try:
-                img = ImageOps.exif_transpose(Image.open(fp)).convert("RGB")
-                w, h = img.size
-                ratio = self.THUMB_SIZE / max(w, h)
-                tw, th = int(w * ratio), int(h * ratio)
-                img = img.resize((tw, th), Image.LANCZOS)
-                photo = ImageTk.PhotoImage(img)
-                self._fp_photos.append(photo)
-                ff = ctk.CTkFrame(row_frame, fg_color="transparent")
-                ff.pack(side="left", padx=3)
-                lbl = tk.Label(ff, image=photo, bg="#2B2B2B", borderwidth=0)
-                lbl.image = photo
-                lbl.pack()
-                name = fp.stem[:10] + (".." if len(fp.stem) > 10 else "")
-                ctk.CTkLabel(ff, text=name, font=("TkDefaultFont", 8),
-                             text_color="#999").pack()
-            except Exception:
-                pass
-
-    def _browse_other_folder(self):
         from tkinter import filedialog
-        path = filedialog.askdirectory(title="选择图片文件夹")
+        path = filedialog.askdirectory(title="选择原图文件夹")
         if path:
-            self._folder_selected(path)
-
-    # ── AI 处理 ──────────────────────────────────────────────
+            self.entry_dir.delete(0, "end")
+            self.entry_dir.insert(0, path)
+            d = Path(path)
+            ann = d / "annotations.json"
+            self.update_idletasks()
+            if ann.exists():
+                self.after_idle(lambda: self._start_process(auto_load=True))
+            else:
+                self.status.configure(text="已选文件夹，点击「AI 处理」开始")
 
     def _start_process(self, auto_load=False):
         # 模型还在加载中，不允许开始处理
