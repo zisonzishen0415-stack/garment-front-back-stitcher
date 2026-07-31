@@ -414,10 +414,12 @@ class ImageProcessorV11:
                 if cy_max - cy_min >= 50:
                     j_bbox_a = self._bbox_in_range(mask_a, cy_min, cy_max)
                     j_bbox_b = self._bbox_in_range(mask_b, cy_min, cy_max)
+                    # 共识区间只保留水平 + 底部宽度对齐，顶部不做限制
+                    # 微调模型已处理人台/脖子顶部排除
                     if j_bbox_a:
-                        bbox_a = j_bbox_a
+                        bbox_a = (j_bbox_a[0], bbox_a[1], j_bbox_a[2], j_bbox_a[3])
                     if j_bbox_b:
-                        bbox_b = j_bbox_b
+                        bbox_b = (j_bbox_b[0], bbox_b[1], j_bbox_b[2], j_bbox_b[3])
 
         # v11.1: 杆子底部裁剪
         if bbox_a:
@@ -476,11 +478,11 @@ class ImageProcessorV11:
                     if j_bbox_a:
                         debug.append(("④ CV共识提炼(橙=前绿=后) A",
                                       self._debug_rod_compare(img_a, bbox_a, j_bbox_a)))
-                        bbox_a = j_bbox_a
+                        bbox_a = (j_bbox_a[0], bbox_a[1], j_bbox_a[2], j_bbox_a[3])
                     if j_bbox_b:
                         debug.append(("④ CV共识提炼(橙=前绿=后) B",
                                       self._debug_rod_compare(img_b, bbox_b, j_bbox_b)))
-                        bbox_b = j_bbox_b
+                        bbox_b = (j_bbox_b[0], bbox_b[1], j_bbox_b[2], j_bbox_b[3])
 
         # 5. 杆子裁剪前后对比
         if bbox_a:
