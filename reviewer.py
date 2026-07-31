@@ -734,15 +734,11 @@ class ReviewerApp(ctk.CTk):
 
     def _pick_dir(self):
         from tkinter import filedialog
-        # 用 askopenfilename 替代 askdirectory —— 文件对话框会显示图片内容
-        file_path = filedialog.askopenfilename(
-            title="选择文件夹中的任意一张图片",
-            filetypes=[("图片文件", "*.jpg *.jpeg *.png *.bmp *.tiff *.tif"),
-                       ("所有文件", "*.*")])
-        if file_path:
-            d = Path(file_path).parent
+        path = filedialog.askdirectory(title="选择原图文件夹")
+        if path:
             self.entry_dir.delete(0, "end")
-            self.entry_dir.insert(0, str(d))
+            self.entry_dir.insert(0, path)
+            d = Path(path)
             ann = d / "annotations.json"
             self.update_idletasks()
             if ann.exists():
