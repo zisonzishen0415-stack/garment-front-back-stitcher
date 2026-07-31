@@ -734,17 +734,20 @@ class ReviewerApp(ctk.CTk):
 
     def _pick_dir(self):
         from tkinter import filedialog
-        path = filedialog.askdirectory(title="选择原图文件夹")
-        if path:
-            self.entry_dir.delete(0, "end")
-            self.entry_dir.insert(0, path)
-            d = Path(path)
-            ann = d / "annotations.json"
-            self.update_idletasks()
-            if ann.exists():
-                self.after_idle(lambda: self._start_process(auto_load=True))
-            else:
-                self.status.configure(text="已选文件夹，点击「AI 处理」开始")
+        path = filedialog.askopenfilename(
+            title="选择文件夹中任意一张图片",
+            filetypes=[("图片", "*.jpg *.jpeg *.png *.bmp *.tiff *.tif")])
+        if not path:
+            return
+        d = Path(path).parent
+        self.entry_dir.delete(0, "end")
+        self.entry_dir.insert(0, str(d))
+        ann = d / "annotations.json"
+        self.update_idletasks()
+        if ann.exists():
+            self.after_idle(lambda: self._start_process(auto_load=True))
+        else:
+            self.status.configure(text="已选文件夹，点击「AI 处理」开始")
 
     def _start_process(self, auto_load=False):
         # 模型还在加载中，不允许开始处理
