@@ -468,6 +468,7 @@ class ReviewerApp(ctk.CTk):
         self._results: list = []
         self._first_loaded = False
         self._pending_ai = False    # 模型未就绪时点了 AI 处理，就绪后自动开始
+        self.margin_scale = 1.0     # 留白滑杆：裁切窗口缩放系数
 
         self.btn_debug = None
 
@@ -589,6 +590,18 @@ class ReviewerApp(ctk.CTk):
         left.grid(row=0, column=0, sticky="ns", padx=(4, 2), pady=4)
         left.pack_propagate(False)
         ctk.CTkLabel(left, text="拼接预览", font=ctk.CTkFont(weight="bold")).pack(pady=(6, 2))
+        # 留白滑杆：放大裁切窗口保留人台（水平黄金比例 + 垂直对称自动保留）
+        margin_row = ctk.CTkFrame(left, fg_color="transparent")
+        margin_row.pack(fill="x", padx=8, pady=(0, 2))
+        ctk.CTkLabel(margin_row, text="留白", font=ctk.CTkFont(size=11)).pack(side="left")
+        self.margin_slider = ctk.CTkSlider(
+            margin_row, from_=0.8, to=2.5, number_of_steps=34,
+            command=self._on_margin_change)
+        self.margin_slider.set(1.0)
+        self.margin_slider.pack(side="left", fill="x", expand=True, padx=6)
+        self.lbl_margin = ctk.CTkLabel(margin_row, text="×1.0", width=44,
+                                       font=ctk.CTkFont(size=11))
+        self.lbl_margin.pack(side="left")
         self.preview_canvas = tk.Canvas(left, bg="#1E1E1E", highlightthickness=0)
         self.preview_canvas.pack(fill="both", expand=True, padx=8, pady=(0, 8))
         self.preview_canvas.bind("<MouseWheel>", self._on_preview_wheel)
@@ -996,6 +1009,12 @@ class ReviewerApp(ctk.CTk):
         self.lbl_angle_a.configure(text=f"{self.angle_a:+.1f}°")
         self.lbl_angle_b.configure(text=f"{self.angle_b:+.1f}°")
 
+        # 留白比例：标注优先 → 默认 1.0
+        self.margin_scale = round(float(ann_a.get("margin", 1.0)), 1)
+        if hasattr(self, 'margin_slider'):
+            self.margin_slider.set(self.margin_scale)
+            self.lbl_margin.configure(text=f"×{self.margin_scale:.1f}")
+
         # 后台异步加载图片 + 显示旋转 spinner
         self._load_seq += 1
         seq = self._load_seq
@@ -1075,7 +1094,7 @@ class ReviewerApp(ctk.CTk):
             preview = self._liquified
             th = preview.width
         else:
-            unified_cw = max(self._natural_w(self.bbox_a), self._natural_w(self.bbox_b))
+            unified_cw = self._effective_cw(self.bbox_a, self.bbox_b)
             crop_a = self._simple_crop(self.img_a, self.bbox_a, "right", unified_cw, self.angle_a)
             crop_b = self._simple_crop(self.img_b, self.bbox_b, "left", unified_cw, self.angle_b)
             if crop_a.width != crop_b.width:
@@ -1189,6 +1208,19 @@ class ReviewerApp(ctk.CTk):
         self._update_preview()
         self._auto_save_debounce()
 
+    def _on_margin_change(self, value):
+        """留白滑杆拖动：只缩放裁切窗口，水平黄金比例 + 垂直对称自动保留。"""
+        self.margin_scale = round(float(value), 1)
+        self.lbl_margin.configure(text=f"×{self.margin_scale:.1f}")
+        self._liquified = None  # 裁切窗口变了，液化作废
+        self._update_preview()
+        self._auto_save_debounce()
+
+    def _effective_cw(self, ba, bb, margin=None):
+        """统一的裁切宽度 × 留白滑杆系数。"""
+        scale = margin if margin is not None else getattr(self, 'margin_scale', 1.0)
+        return max(1, int(max(self._natural_w(ba), self._natural_w(bb)) * scale))
+
     # ── 按钮操作 ──────────────────────────────────────────────
 
     def _auto_save_debounce(self):
@@ -1244,7 +1276,8 @@ class ReviewerApp(ctk.CTk):
     def _auto_save(self):
         if not self.pairs or not self.input_dir: return
         pa, pb = self.pairs[self.pair_idx]
-        self.annotations[pa.name] = {"file": pa.name, "bbox": list(self.bbox_a), "angle": self.angle_a}
+        self.annotations[pa.name] = {"file": pa.name, "bbox": list(self.bbox_a),
+                                     "angle": self.angle_a, "margin": self.margin_scale}
         self.annotations[pb.name] = {"file": pb.name, "bbox": list(self.bbox_b), "angle": self.angle_b}
         data = {"source_dir": str(self.input_dir), "annotations": list(self.annotations.values())}
         json_text = json.dumps(data, ensure_ascii=False, indent=2)
@@ -1265,7 +1298,7 @@ class ReviewerApp(ctk.CTk):
 
     def _stitch_current(self):
         """生成当前 bbox/角度的拼接结果（不含液化），用于导出和液化入口。"""
-        unified_cw = max(self._natural_w(self.bbox_a), self._natural_w(self.bbox_b))
+        unified_cw = self._effective_cw(self.bbox_a, self.bbox_b)
         crop_a = self._simple_crop(self.img_a, self.bbox_a, "right", unified_cw, self.angle_a)
         crop_b = self._simple_crop(self.img_b, self.bbox_b, "left", unified_cw, self.angle_b)
         if crop_a.width != crop_b.width:
@@ -1298,16 +1331,18 @@ class ReviewerApp(ctk.CTk):
                     continue
                 ba, bb = list(self.bbox_a), list(self.bbox_b)
                 aa, ab = self.angle_a, self.angle_b
+                margin = self.margin_scale
             else:
                 ann_a = self.annotations.get(pa.name, {}); ann_b = self.annotations.get(pb.name, {})
                 ba = ann_a.get("bbox") if "bbox" in ann_a else (self._results[i][0] if self._results[i] else None)
                 bb = ann_b.get("bbox") if "bbox" in ann_b else (self._results[i][1] if self._results[i] else None)
                 aa = ann_a.get("angle", 0.0); ab = ann_b.get("angle", 0.0)
+                margin = float(ann_a.get("margin", 1.0))
             if not ba or not bb: continue
             try:
                 ia = ImageOps.exif_transpose(Image.open(pa)).convert("RGB")
                 ib = ImageOps.exif_transpose(Image.open(pb)).convert("RGB")
-                ucw = max(self._natural_w(ba), self._natural_w(bb))
+                ucw = self._effective_cw(ba, bb, margin)
                 ca = self._simple_crop(ia, ba, "right", ucw, aa)
                 cb = self._simple_crop(ib, bb, "left", ucw, ab)
                 if ca.width != cb.width:
