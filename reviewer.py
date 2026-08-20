@@ -215,23 +215,21 @@ class BBoxEditor(tk.Canvas):
     # ── 命中检测 ──────────────────────────────────────────────
 
     def _hit_corner(self, cx, cy):
-        for ccx, ccy in self._corner_canvas_pos:
+        for ccx, ccy in getattr(self, '_corner_canvas_pos', []):
             if abs(cx - ccx) <= HANDLE_SIZE + 5 and abs(cy - ccy) <= HANDLE_SIZE + 5:
-                # Return tag for the corner — needed for resize direction
+                # Return tag for the corner  needed for resize direction
                 # But with axis-aligned bbox, tags are ["nw","ne","se","sw"] for corners
                 return True
         return False
-
     def _corner_name(self, cx, cy):
-        """返回最近的角点名（用于 resize 方向）。"""
+        """Return the nearest corner name (for resize direction)."""
         names = ["nw", "ne", "se", "sw"]
         best, best_d = None, HANDLE_SIZE + 8
-        for name, (ccx, ccy) in zip(names, self._corner_canvas_pos):
+        for name, (ccx, ccy) in zip(names, getattr(self, '_corner_canvas_pos', [])):
             d = ((cx - ccx)**2 + (cy - ccy)**2)**0.5
             if d < best_d:
                 best, best_d = name, d
         return best
-
     def _hit_rotation_zone(self, cx, cy):
         """框外靠近角点 = 旋转区域。"""
         if not hasattr(self, '_corner_canvas_pos'):
@@ -469,6 +467,10 @@ class ReviewerApp(ctk.CTk):
         self._first_loaded = False
         self._pending_ai = False    # 模型未就绪时点了 AI 处理，就绪后自动开始
         self.margin_scale = 1.0     # 留白滑杆：裁切窗口缩放系数
+        self.offset_a = 0   # vertical offset for front crop
+        self.offset_b = 0   # vertical offset for back crop
+        self.offset_all = 0  # overall vertical offset for both sides
+        self._margin_preview_id = None  # margin preview throttle
 
         self.btn_debug = None
 
@@ -589,10 +591,22 @@ class ReviewerApp(ctk.CTk):
         left = ctk.CTkFrame(main, width=500, height=500)
         left.grid(row=0, column=0, sticky="ns", padx=(4, 2), pady=4)
         left.pack_propagate(False)
-        ctk.CTkLabel(left, text="拼接预览", font=ctk.CTkFont(weight="bold")).pack(pady=(6, 2))
-        # 留白滑杆：放大裁切窗口保留人台（水平黄金比例 + 垂直对称自动保留）
-        margin_row = ctk.CTkFrame(left, fg_color="transparent")
-        margin_row.pack(fill="x", padx=8, pady=(0, 2))
+        header_row = ctk.CTkFrame(left, fg_color="transparent")
+        header_row.pack(fill="x", padx=8, pady=(6, 2))
+
+        # overall vertical position buttons (left of the title)
+        ctk.CTkButton(header_row, text='↑', width=24,
+                      command=lambda: self._adj_offset_all(-10)).pack(side="left", padx=(0, 1))
+        ctk.CTkButton(header_row, text='↓', width=24,
+                      command=lambda: self._adj_offset_all(10)).pack(side="left", padx=1)
+        self.lbl_offset_all = ctk.CTkLabel(header_row, text="+0", width=34, font=ctk.CTkFont(size=11))
+        self.lbl_offset_all.pack(side="left", padx=2)
+
+        ctk.CTkLabel(header_row, text="拼接预览", font=ctk.CTkFont(weight="bold")).pack(side="left", padx=(8, 0))
+
+        # whitespace controls on the same row, right of the title
+        margin_row = ctk.CTkFrame(header_row, fg_color="transparent")
+        margin_row.pack(side="left", fill="x", expand=True, padx=6)
         ctk.CTkLabel(margin_row, text="留白", font=ctk.CTkFont(size=11)).pack(side="left")
         self.margin_slider = ctk.CTkSlider(
             margin_row, from_=0.8, to=2.5, number_of_steps=34,
@@ -624,6 +638,12 @@ class ReviewerApp(ctk.CTk):
 
         row_a = ctk.CTkFrame(frame_a)
         row_a.pack(fill="x", padx=4, pady=(4, 2))
+        ctk.CTkButton(row_a, text='↑', width=24,
+                      command=lambda: self._adj_offset('a', -10)).pack(side="left", padx=(8, 1))
+        ctk.CTkButton(row_a, text='↓', width=24,
+                      command=lambda: self._adj_offset('a', 10)).pack(side="left", padx=1)
+        self.lbl_offset_a = ctk.CTkLabel(row_a, text="+0", width=34, font=ctk.CTkFont(size=11))
+        self.lbl_offset_a.pack(side="left", padx=2)
         ctk.CTkLabel(row_a, text="正面", font=ctk.CTkFont(weight="bold")).pack(side="left")
         ctk.CTkButton(row_a, text="↻顺", width=30, command=lambda: self._adj_angle('a', +0.5)).pack(side="right", padx=1)
         self.lbl_angle_a = ctk.CTkLabel(row_a, text="0.0°", width=40, font=ctk.CTkFont(size=11))
@@ -642,6 +662,12 @@ class ReviewerApp(ctk.CTk):
 
         row_b = ctk.CTkFrame(frame_b)
         row_b.pack(fill="x", padx=4, pady=(4, 2))
+        ctk.CTkButton(row_b, text='↑', width=24,
+                      command=lambda: self._adj_offset('b', -10)).pack(side="left", padx=(8, 1))
+        ctk.CTkButton(row_b, text='↓', width=24,
+                      command=lambda: self._adj_offset('b', 10)).pack(side="left", padx=1)
+        self.lbl_offset_b = ctk.CTkLabel(row_b, text="+0", width=34, font=ctk.CTkFont(size=11))
+        self.lbl_offset_b.pack(side="left", padx=2)
         ctk.CTkLabel(row_b, text="反面", font=ctk.CTkFont(weight="bold")).pack(side="left")
         ctk.CTkButton(row_b, text="↻顺", width=30, command=lambda: self._adj_angle('b', +0.5)).pack(side="right", padx=1)
         self.lbl_angle_b = ctk.CTkLabel(row_b, text="0.0°", width=40, font=ctk.CTkFont(size=11))
@@ -679,6 +705,31 @@ class ReviewerApp(ctk.CTk):
         self.bind("<period>", lambda e: self._adj_angle('b', +0.5), add=True)
 
     # ── 角度控制 ──────────────────────────────────────────────
+
+    def _adj_offset(self, which, delta):
+        """Adjust vertical crop offset for front/back image."""
+        if not self.pairs: return
+        if which == 'a':
+            self.offset_a = max(-500, min(500, self.offset_a + delta))
+            if hasattr(self, 'lbl_offset_a'):
+                self.lbl_offset_a.configure(text=f"{self.offset_a:+d}")
+        else:
+            self.offset_b = max(-500, min(500, self.offset_b + delta))
+            if hasattr(self, 'lbl_offset_b'):
+                self.lbl_offset_b.configure(text=f"{self.offset_b:+d}")
+        self._liquified = None
+        self._update_preview()
+        self._auto_save_debounce()
+
+    def _adj_offset_all(self, delta):
+        """Adjust overall vertical position of both sides together."""
+        if not self.pairs: return
+        self.offset_all = max(-500, min(500, self.offset_all + delta))
+        if hasattr(self, 'lbl_offset_all'):
+            self.lbl_offset_all.configure(text=f"{self.offset_all:+d}")
+        self._liquified = None
+        self._update_preview()
+        self._auto_save_debounce()
 
     def _adj_angle(self, which, delta):
         if not self.pairs: return
@@ -959,6 +1010,9 @@ class ReviewerApp(ctk.CTk):
             return
 
         self._liquified = None
+        if getattr(self, '_margin_preview_id', None):
+            self.after_cancel(self._margin_preview_id)
+            self._margin_preview_id = None
 
         pa, pb = self.pairs[self.pair_idx]
         self.lbl_idx.configure(text=f"{self.pair_idx + 1} / {self._proc_total}")
@@ -1011,6 +1065,13 @@ class ReviewerApp(ctk.CTk):
 
         # 留白比例：标注优先 → 默认 1.0
         self.margin_scale = round(float(ann_a.get("margin", 1.0)), 1)
+        self.offset_a = int(ann_a.get("offset_y", 0))
+        self.offset_b = int(ann_b.get("offset_y", 0))
+        self.offset_all = int(ann_a.get("offset_all", 0))
+        if hasattr(self, 'lbl_offset_a'):
+            self.lbl_offset_a.configure(text=f"{self.offset_a:+d}")
+            self.lbl_offset_b.configure(text=f"{self.offset_b:+d}")
+            self.lbl_offset_all.configure(text=f"{self.offset_all:+d}")
         if hasattr(self, 'margin_slider'):
             self.margin_slider.set(self.margin_scale)
             self.lbl_margin.configure(text=f"×{self.margin_scale:.1f}")
@@ -1061,7 +1122,7 @@ class ReviewerApp(ctk.CTk):
         return cw
 
     @staticmethod
-    def _simple_crop(img, bbox, anchor, crop_w, angle=0.0):
+    def _simple_crop(img, bbox, anchor, crop_w, angle=0.0, offset_y=0):
         if angle != 0.0:
             cx = (bbox[0] + bbox[2]) / 2; cy = (bbox[1] + bbox[3]) / 2
             img = img.rotate(angle, Image.BICUBIC, center=(cx, cy),
@@ -1083,44 +1144,74 @@ class ReviewerApp(ctk.CTk):
             cx = x1 - inner
         if cx < 0: cx = 0
         if cx + crop_w > w: cx = w - crop_w
-        cy = int(bcy - crop_h / 2)
+        cy = int(bcy - crop_h / 2 + offset_y)
         if cy < 0: cy = 0
         if cy + crop_h > h: cy = h - crop_h
         return img.crop((cx, cy, cx + crop_w, cy + crop_h))
 
     def _update_preview(self):
-        if not self.img_a or not self.img_b: return
+        if not self.img_a or not self.img_b:
+            return
+
+        c = self.preview_canvas
+        cw_canvas = max(c.winfo_width(), 100)
+        ch_canvas = max(c.winfo_height(), 100)
+        display_size = min(cw_canvas, ch_canvas)
+        ds = max(int(display_size * self._preview_zoom), 100)
+
         if self._liquified:
             preview = self._liquified
             th = preview.width
         else:
             unified_cw = self._effective_cw(self.bbox_a, self.bbox_b)
-            crop_a = self._simple_crop(self.img_a, self.bbox_a, "right", unified_cw, self.angle_a)
-            crop_b = self._simple_crop(self.img_b, self.bbox_b, "left", unified_cw, self.angle_b)
+
+            # Downsample source images before rotate/crop for the live preview.
+            # This avoids full-size rotation on every whitespace-slider step.
+            work_scale = min(1.0, max(ds * 2, 320) / (unified_cw * 2))
+            if work_scale < 1.0:
+                img_a = self.img_a.resize(
+                    (max(1, int(self.img_a.width * work_scale)),
+                     max(1, int(self.img_a.height * work_scale))),
+                    Image.BILINEAR)
+                img_b = self.img_b.resize(
+                    (max(1, int(self.img_b.width * work_scale)),
+                     max(1, int(self.img_b.height * work_scale))),
+                    Image.BILINEAR)
+                bbox_a = [int(round(v * work_scale)) for v in self.bbox_a]
+                bbox_b = [int(round(v * work_scale)) for v in self.bbox_b]
+                crop_w = max(1, int(round(unified_cw * work_scale)))
+                off_a = int((self.offset_a + self.offset_all) * work_scale)
+                off_b = int((self.offset_b + self.offset_all) * work_scale)
+            else:
+                img_a, img_b = self.img_a, self.img_b
+                bbox_a, bbox_b = self.bbox_a, self.bbox_b
+                crop_w = unified_cw
+                off_a = self.offset_a + self.offset_all
+                off_b = self.offset_b + self.offset_all
+
+            crop_a = self._simple_crop(img_a, bbox_a, "right", crop_w, self.angle_a, off_a)
+            crop_b = self._simple_crop(img_b, bbox_b, "left", crop_w, self.angle_b, off_b)
             if crop_a.width != crop_b.width:
                 tw = max(crop_a.width, crop_b.width); th = tw * 2
                 for crp, is_a in [(crop_a, True), (crop_b, False)]:
                     if crp.width != tw:
                         tmp = Image.new("RGB", (tw, th), (255, 255, 255))
                         tmp.paste(crp, ((tw - crp.width)//2, (th - crp.height)//2))
-                        if is_a: crop_a = tmp
-                        else:    crop_b = tmp
+                        if is_a:
+                            crop_a = tmp
+                        else:
+                            crop_b = tmp
             th = min(crop_a.height, crop_b.height); th += th % 2; hw = th // 2
             left = crop_a.resize((hw, th), Image.BILINEAR)
             right = crop_b.resize((hw, th), Image.BILINEAR)
             preview = Image.new("RGB", (th, th), (255, 255, 255))
             preview.paste(left, (0, 0)); preview.paste(right, (hw, 0))
 
-        c = self.preview_canvas
-        cw_canvas = max(c.winfo_width(), 100); ch_canvas = max(c.winfo_height(), 100)
-        display_size = min(cw_canvas, ch_canvas)
-        ds = max(int(display_size * self._preview_zoom), 100)
         if th != ds:
             preview = preview.resize((ds, ds), Image.BILINEAR)
 
         self._preview_img = ImageTk.PhotoImage(preview)
-        c.delete("spinner")  # 清除 spinner（如果正在加载）
-        # 清除画布但不删 spinner tag（已在上面删）
+        c.delete("spinner")
         items = c.find_all()
         for item in items:
             if "spinner" not in c.gettags(item):
@@ -1128,7 +1219,7 @@ class ReviewerApp(ctk.CTk):
         px = (cw_canvas - ds) // 2; py = (ch_canvas - ds) // 2
         c.create_image(px, py, anchor=tk.NW, image=self._preview_img)
 
-        # 半透明灰色虚线网格（stipple 实现半透明效果）
+        # semi-transparent gray dashed grid
         gray = "#666666"; ds_sub = (3, 15)
         for frac in [0.25, 0.5, 0.75]:
             ly = py + int(ds * frac)
@@ -1136,8 +1227,6 @@ class ReviewerApp(ctk.CTk):
         for frac in [0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875]:
             lx = px + int(ds * frac)
             c.create_line(lx, py, lx, py + ds, fill=gray, width=1, dash=ds_sub, stipple="gray50")
-
-    # ── 加载动画 ────────────────────────────────────────────────
 
     def _show_loading(self):
         """在预览 canvas 中央显示半透明旋转加载弧。"""
@@ -1209,12 +1298,22 @@ class ReviewerApp(ctk.CTk):
         self._auto_save_debounce()
 
     def _on_margin_change(self, value):
-        """留白滑杆拖动：只缩放裁切窗口，水平黄金比例 + 垂直对称自动保留。"""
+        """Whitespace slider: update label immediately, render preview throttled."""
         self.margin_scale = round(float(value), 1)
         self.lbl_margin.configure(text=f"×{self.margin_scale:.1f}")
-        self._liquified = None  # 裁切窗口变了，液化作废
-        self._update_preview()
+        self._liquified = None
+        self._schedule_margin_preview()
         self._auto_save_debounce()
+
+    def _schedule_margin_preview(self):
+        """Merge slider callbacks so only the last one triggers a redraw."""
+        if self._margin_preview_id:
+            self.after_cancel(self._margin_preview_id)
+        self._margin_preview_id = self.after(50, self._apply_margin_preview)
+
+    def _apply_margin_preview(self):
+        self._margin_preview_id = None
+        self._update_preview()
 
     def _effective_cw(self, ba, bb, margin=None):
         """统一的裁切宽度 × 留白滑杆系数。"""
@@ -1251,6 +1350,7 @@ class ReviewerApp(ctk.CTk):
         self.bbox_a, self.bbox_b = self.bbox_b, self.bbox_a
         self.angle_a, self.angle_b = self.angle_b, self.angle_a
         self.ai_bbox_a, self.ai_bbox_b = self.ai_bbox_b, self.ai_bbox_a
+        self.offset_a, self.offset_b = self.offset_b, self.offset_a
         pa, pb = self.pairs[self.pair_idx]; self.pairs[self.pair_idx] = (pb, pa)
         self.editor_a.set_image(self.img_a, self.bbox_a, self.ai_bbox_a, self.angle_a)
         self.editor_b.set_image(self.img_b, self.bbox_b, self.ai_bbox_b, self.angle_b)
@@ -1258,6 +1358,9 @@ class ReviewerApp(ctk.CTk):
         self.lbl_angle_b.configure(text=f"{self.angle_b:+.1f}°")
         self._liquified = None
         self._update_preview()
+        if hasattr(self, 'lbl_offset_a'):
+            self.lbl_offset_a.configure(text=f"{self.offset_a:+d}")
+            self.lbl_offset_b.configure(text=f"{self.offset_b:+d}")
         self.lbl_fname.configure(text=f"{pb.stem}  +  {pa.stem}")
         self.status.configure(text="已互换正反面")
         self._auto_save()
@@ -1277,8 +1380,8 @@ class ReviewerApp(ctk.CTk):
         if not self.pairs or not self.input_dir: return
         pa, pb = self.pairs[self.pair_idx]
         self.annotations[pa.name] = {"file": pa.name, "bbox": list(self.bbox_a),
-                                     "angle": self.angle_a, "margin": self.margin_scale}
-        self.annotations[pb.name] = {"file": pb.name, "bbox": list(self.bbox_b), "angle": self.angle_b}
+                                     "angle": self.angle_a, "margin": self.margin_scale, "offset_y": self.offset_a, "offset_all": self.offset_all}
+        self.annotations[pb.name] = {"file": pb.name, "bbox": list(self.bbox_b), "angle": self.angle_b, "offset_y": self.offset_b}
         data = {"source_dir": str(self.input_dir), "annotations": list(self.annotations.values())}
         json_text = json.dumps(data, ensure_ascii=False, indent=2)
         ann_path = self.input_dir / "annotations.json"
@@ -1299,8 +1402,8 @@ class ReviewerApp(ctk.CTk):
     def _stitch_current(self):
         """生成当前 bbox/角度的拼接结果（不含液化），用于导出和液化入口。"""
         unified_cw = self._effective_cw(self.bbox_a, self.bbox_b)
-        crop_a = self._simple_crop(self.img_a, self.bbox_a, "right", unified_cw, self.angle_a)
-        crop_b = self._simple_crop(self.img_b, self.bbox_b, "left", unified_cw, self.angle_b)
+        crop_a = self._simple_crop(self.img_a, self.bbox_a, "right", unified_cw, self.angle_a, self.offset_a + self.offset_all)
+        crop_b = self._simple_crop(self.img_b, self.bbox_b, "left", unified_cw, self.angle_b, self.offset_b + self.offset_all)
         if crop_a.width != crop_b.width:
             tw = max(crop_a.width, crop_b.width); th = tw * 2
             for crp, is_a in [(crop_a, True), (crop_b, False)]:
@@ -1332,19 +1435,23 @@ class ReviewerApp(ctk.CTk):
                 ba, bb = list(self.bbox_a), list(self.bbox_b)
                 aa, ab = self.angle_a, self.angle_b
                 margin = self.margin_scale
+                offset_a = self.offset_a + self.offset_all
+                offset_b = self.offset_b + self.offset_all
             else:
                 ann_a = self.annotations.get(pa.name, {}); ann_b = self.annotations.get(pb.name, {})
                 ba = ann_a.get("bbox") if "bbox" in ann_a else (self._results[i][0] if self._results[i] else None)
                 bb = ann_b.get("bbox") if "bbox" in ann_b else (self._results[i][1] if self._results[i] else None)
                 aa = ann_a.get("angle", 0.0); ab = ann_b.get("angle", 0.0)
                 margin = float(ann_a.get("margin", 1.0))
+                offset_a = int(ann_a.get("offset_y", 0)) + int(ann_a.get("offset_all", 0))
+                offset_b = int(ann_b.get("offset_y", 0)) + int(ann_b.get("offset_all", 0))
             if not ba or not bb: continue
             try:
                 ia = ImageOps.exif_transpose(Image.open(pa)).convert("RGB")
                 ib = ImageOps.exif_transpose(Image.open(pb)).convert("RGB")
                 ucw = self._effective_cw(ba, bb, margin)
-                ca = self._simple_crop(ia, ba, "right", ucw, aa)
-                cb = self._simple_crop(ib, bb, "left", ucw, ab)
+                ca = self._simple_crop(ia, ba, "right", ucw, aa, offset_a)
+                cb = self._simple_crop(ib, bb, "left", ucw, ab, offset_b)
                 if ca.width != cb.width:
                     tw = max(ca.width, cb.width); th = tw * 2
                     for crp, is_a in [(ca, True), (cb, False)]:

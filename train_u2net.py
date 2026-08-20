@@ -305,7 +305,7 @@ def train(args):
     # 数据集
     dataset = MaskDataset(args.data, size=args.size, augment=not args.no_augment)
     loader = DataLoader(dataset, batch_size=args.batch, shuffle=True,
-                        num_workers=2, pin_memory=True, drop_last=True)
+                        num_workers=0, pin_memory=True, drop_last=True)
     print(f"样本: {len(dataset)} (原图 × {len(dataset.pairs)}对 × 增强)")
 
     # 模型

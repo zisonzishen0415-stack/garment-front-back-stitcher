@@ -129,7 +129,7 @@ class ImageProcessorV11:
                     return (int(cols.min()), int(rows.min()),
                             int(cols.max()), int(rows.max())), mask_arr
 
-        # 优先使用微调模型
+        # 优先使用微调模型，不允许回退到通用模型
         ft_model = Path(__file__).parent / "models" / "u2net_finetuned.onnx"
         if ft_model.exists():
             mask_arr = self._run_mask_onnx(img, str(ft_model))

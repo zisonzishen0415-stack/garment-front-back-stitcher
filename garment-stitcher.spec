@@ -32,18 +32,25 @@ if not _u2net.exists():
 _datas.append((str(_u2net), 'models'))
 
 # 微调模型（如果存在则打包）
+# 注意：该模型为 external-data 格式，权重存在同名 .data 文件里，必须一并打包
 _ft_model = PROJECT / 'models' / 'u2net_finetuned.onnx'
 if _ft_model.exists():
     _datas.append((str(_ft_model), 'models'))
+    _ft_data = PROJECT / 'models' / 'u2net_finetuned.onnx.data'
+    if _ft_data.exists():
+        _datas.append((str(_ft_data), 'models'))
+    else:
+        raise SystemExit(f"微调模型缺少外部权重文件: {_ft_data}\n请确保 u2net_finetuned.onnx.data 与 .onnx 在同一目录")
 
 a = Analysis(
     ['reviewer.py'],
-    pathex=[],
+    # _shims 优先于 site-packages，用占位 pymatting 顶掉真实 pymatting（避免引入 numba/llvmlite）
+    pathex=[str(PROJECT / '_shims')],
     binaries=[],
     datas=_datas,
     hiddenimports=[
         'rembg', 'onnxruntime', 'onnxruntime.capi',
-        'skimage', 'pymatting', 'pooch',
+        'skimage', 'pooch',
         'customtkinter', 'PIL', 'PIL.ImageTk', 'PIL.ImageDraw',
         'numpy', 'scipy', 'scipy.ndimage',
         'tkinter.ttk',
@@ -55,6 +62,8 @@ a = Analysis(
         'matplotlib',
         'torch', 'tensorflow', 'keras',
         'sympy', 'pandas', 'pytest',
+        # 运行时未使用、被 PyInstaller 过度收集的重包
+        'numba', 'llvmlite', 'pyarrow', 'sklearn', 'pydantic', 'fsspec', 'git',
     ],
 )
 
@@ -69,7 +78,7 @@ exe = EXE(
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     runtime_tmpdir=None,
     console=False,
@@ -82,7 +91,7 @@ coll = COLLECT(
     a.zipfiles,
     a.datas,
     strip=False,
-    upx=True,
+    upx=False,
     upx_exclude=[],
     name='GarmentStitcher',
 )

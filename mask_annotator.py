@@ -58,6 +58,7 @@ class MaskCanvas(tk.Canvas):
         self._last_fit_w = 0
         self._last_fit_h = 0
         self._on_changed = on_changed
+        self._overlay_after_id = None  # throttle for mask overlay redraw
 
         self.bind("<ButtonPress-1>",  lambda e: self._start_brush(e, 'erase'))
         self.bind("<ButtonPress-3>",  lambda e: self._start_brush(e, 'restore'))
@@ -233,11 +234,27 @@ class MaskCanvas(tk.Canvas):
             self._apply_brush(event.x, event.y, erase)
         self._last_brush_x = event.x
         self._last_brush_y = event.y
-        self._redraw_overlay()
+        self._draw_cursor()
+        self._schedule_redraw_overlay()
         if self._on_changed:
             self._on_changed()
 
+
+    def _schedule_redraw_overlay(self):
+        """Throttle full overlay redraws during brush drags."""
+        if self._overlay_after_id is not None:
+            return
+        self._overlay_after_id = self.after(30, self._flush_overlay_redraw)
+
+    def _flush_overlay_redraw(self):
+        self._overlay_after_id = None
+        self._redraw_overlay()
+
     def _on_up(self, event):
+        if self._overlay_after_id is not None:
+            self.after_cancel(self._overlay_after_id)
+            self._overlay_after_id = None
+        self._redraw_overlay()
         self._mode = None
 
     # ── 平移 ────────────────────────────────────────────────────

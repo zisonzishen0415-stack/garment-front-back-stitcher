@@ -1,4 +1,4 @@
-Unicode true
+﻿Unicode true
 !include "MUI2.nsh"
 
 !define PRODUCT_NAME "GarmentStitcher"
@@ -23,8 +23,18 @@ Section "Install"
     SetOutPath "$INSTDIR"
     File /r "dist\GarmentStitcher\*"
 
+    ; VC++ 2015-2022 x64 runtime: auto-install if missing.
+    ; Build requirement: put vc_redist.x64.exe in dist\ before running makensis.
+    ReadRegDWORD $0 HKLM "SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64" "Installed"
+    IntCmp $0 1 skip_vc
+        File "/oname=$TEMP\vc_redist.x64.exe" "dist\vc_redist.x64.exe"
+        ExecWait '"$TEMP\vc_redist.x64.exe" /install /quiet /norestart'
+        Delete "$TEMP\vc_redist.x64.exe"
+    skip_vc:
+
     CreateDirectory "$SMPROGRAMS\${PRODUCT_NAME}"
     CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\${PRODUCT_NAME}.lnk" "$INSTDIR\GarmentStitcher.exe"
+    CreateShortCut "$SMPROGRAMS\${PRODUCT_NAME}\使用说明书.lnk" "$INSTDIR\使用说明书.pdf"
     CreateShortCut "$DESKTOP\${PRODUCT_NAME}.lnk" "$INSTDIR\GarmentStitcher.exe"
 
     WriteUninstaller "$INSTDIR\uninstall.exe"
