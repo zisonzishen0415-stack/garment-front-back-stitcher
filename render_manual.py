@@ -118,7 +118,7 @@ def cover_page(canvas, doc):
 
     logo = _prepare_logo()
     iw, ih = 250, 250 * 199 / 710  # ≈70pt
-    logo_top = PAGE_H - 80
+    logo_top = PAGE_H - 235  # 内容块整体下移，居中偏上，避免挤在顶部
     canvas.drawImage(str(logo), (PAGE_W - iw) / 2, logo_top - ih,
                      width=iw, height=ih, mask="auto")
 
